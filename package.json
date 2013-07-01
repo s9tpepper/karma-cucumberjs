@@ -1,0 +1,27 @@
+{
+  "name": "karma-cucumberjs",
+  "version": "0.0.1",
+  "description": "Karma adapter for running Cucumber.js specs",
+  "main": "",
+  "scripts": {
+    "test": "grunt tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/s9tpepper/karma-cucumberjs.git"
+  },
+  "keywords": [
+    "karma",
+    "cucumberjs",
+    "cucumber"
+  ],
+  "author": "Omar Gonzalez",
+  "license": "MIT",
+  "devDependencies": {
+    "grunt": "~0.4.1",
+    "grunt-karma": "~0.4.4",
+    "grunt-contrib-jshint": "~0.6.0",
+    "grunt-contrib-requirejs": "~0.4.1",
+    "grunt-contrib-watch": "~0.4.4"
+  }
+}

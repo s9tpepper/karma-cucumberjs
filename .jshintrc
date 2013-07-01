@@ -1,0 +1,36 @@
+{
+  "predef": [
+    "jasmine",
+    "spyOn",
+    "it",
+    "console",
+    "describe",
+    "expect",
+    "beforeEach",
+    "waits",
+    "waitsFor",
+    "runs",
+    "require",
+    "define"
+  ],
+
+  "node": true,
+  "es5": false,
+  "browser": true,
+  "curly": true,
+  "boss": true,
+  "eqeqeq": true,
+  "immed": true,
+  "newcap": false,
+  "noarg": true,
+  "nonew": true,
+  "undef": true,
+  "sub": true,
+  "strict": false,
+  "white": false,
+  "latedef": true,
+  "eqnull": true,
+  "multistr": true,
+  "unused": false,
+  "trailing": true
+}
