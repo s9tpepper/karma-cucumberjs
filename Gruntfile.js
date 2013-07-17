@@ -80,13 +80,6 @@ module.exports = function (grunt) {
   grunt.loadNpmTasks("grunt-contrib-watch");
   grunt.loadNpmTasks("grunt-karma");
 
-  grunt.registerTask("rename", 'Renames the main lib file', function () {
-    grunt.log.write('Renaming ./lib/main.js to ./lib/adapter.js...');
-    var fs = require('fs');
-    fs.renameSync('./lib/main.js', './lib/adapter.js');
-    grunt.log.ok();
-  });
-
   grunt.registerTask('tests', ['jshint', 'karma:jasmine', 'karma:cuke_once']);
   grunt.registerTask("default", ["jshint", "karma:jasmine", "requirejs", 'karma:cuke_once']);
   grunt.registerTask('dev', ['default', 'watch']);
