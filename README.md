@@ -36,20 +36,17 @@ files: [
   // tests when these change.
   // These are served by Karma so the adapter can load their contents when its time to test.
   {pattern: 'path/to/features/**/*.feature', watched: true, included: false, served: true},
-
-
-  // The adapter is not watched as it will not change.
-  // The adapter is included so it gets added as a <script> to the page.
-  // The adpater is served so the <script> tag will work when its added to the captured browsers.
-  {pattern: 'node_modules/karma-cucumberjs/lib/adapter.js', watched: false, 
-   included: true, served: true},
+  
 
 
   // The step definitions should be loaded last so the adapter can load the global functions 
   // needed by the step defs.
   // The step defs are watched and served so Karma runs when they change.
   {pattern: 'path/to/features/step_definitions/**/*.js', watched: true, included: true, served: true}
-]
+],
+
+frameworks: ['cucumberjs']
+...
 ```
 
 ## Step Definitions
