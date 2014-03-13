@@ -1,5 +1,5 @@
-module.exports = function(karma) {
-     karma.configure({
+module.exports = function(config) {
+     config.set({
 		// Karma configuration
 		// Generated on Tue Jun 11 2013 21:07:37 GMT-0700 (PDT)
 
@@ -48,7 +48,7 @@ module.exports = function(karma) {
 
 		// level of logging
 		// possible values: LOG_DISABLE || LOG_ERROR || LOG_WARN || LOG_INFO || LOG_DEBUG
-		logLevel : LOG_INFO,
+		logLevel : config.LOG_INFO,
 
 
 		// enable / disable watching file and executing tests whenever any file changes

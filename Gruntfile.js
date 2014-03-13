@@ -4,10 +4,7 @@ module.exports = function (grunt) {
       karma_cucumber_files: [
         {pattern: 'vendor/*.css', watched: false, included: false, served: true},
         {pattern: 'app.template', watched: false, included: false, served: true},
-
         {pattern: 'features/**/*.feature', watched: true, included: false, served: true},
-
-        {pattern: 'lib/adapter.js', watched: false, included: true, served: true},
         {pattern: 'features/step_definitions/**/*.js', watched: true, included: true, served: true}
       ],
 
@@ -40,14 +37,18 @@ module.exports = function (grunt) {
         configFile: "karma.conf.js",
         singleRun: true,
         browsers: ["Chrome"],
-        files: "<%= files.karma_cucumber_files %>"
+        files: "<%= files.karma_cucumber_files %>",
+        plugins: ["karma-*", require("./lib/index")],
+        frameworks : ["jasmine","requirejs", "cucumberjs"]
       },
 
       cucumber: {
         configFile: "karma.conf.js",
         singleRun: false,
         browsers: ["Chrome"],
-        files: "<%= files.karma_cucumber_files %>"
+        files: "<%= files.karma_cucumber_files %>",
+        plugins: ["karma-*", require("./lib/index")],
+        frameworks : ["jasmine","requirejs", "cucumberjs"]
       }
     },
 
@@ -82,5 +83,6 @@ module.exports = function (grunt) {
 
   grunt.registerTask('tests', ['jshint', 'karma:jasmine', 'karma:cuke_once']);
   grunt.registerTask("default", ["jshint", "karma:jasmine", "requirejs", 'karma:cuke_once']);
+  grunt.registerTask("build_dev", ["jshint", "karma:jasmine", "requirejs:adapter_dev", 'karma:cuke_once']);
   grunt.registerTask('dev', ['default', 'watch']);
 };
