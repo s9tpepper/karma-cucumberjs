@@ -30,7 +30,8 @@ module.exports = function (grunt) {
       jasmine: {
         configFile: "karma.conf.js",
         singleRun: true,
-        browsers: ["Chrome", "Firefox", "Safari"]
+        browsers: ["Chrome"]
+//        browsers: ["Chrome", "Firefox", "Safari"]
       },
 
       cuke_once: {
@@ -72,6 +73,11 @@ module.exports = function (grunt) {
       js: {
         files: "<%= files.watch_js %>",
         tasks: ['default']
+      },
+
+      units: {
+        files: ["./source/**/*.js", "./spec/**/*_spec.js"],
+        tasks: ["karma:jasmine"]
       }
     }
   });
@@ -85,4 +91,6 @@ module.exports = function (grunt) {
   grunt.registerTask("default", ["jshint", "karma:jasmine", "requirejs", 'karma:cuke_once']);
   grunt.registerTask("build_dev", ["jshint", "karma:jasmine", "requirejs:adapter_dev", 'karma:cuke_once']);
   grunt.registerTask('dev', ['default', 'watch']);
+
+//  grunt.registerTask('unit_dev', [])
 };
