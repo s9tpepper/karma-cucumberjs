@@ -198,10 +198,16 @@ define(['source/adapter/cucumber_runner', 'spec/support/helper'], function (Cucu
     });
 
     describe('startCucumberRun()', function () {
-      it('starts a Cucumber with the loaded features and step definitions', function () {
+      it('starts a Cucumber with the loaded features, step definitions, and default options', function () {
         cucumberRunner.startCucumberRun();
 
-        expect(CucumberRunner.Cucumber).toHaveBeenCalledWith(cucumberRunner.features, cucumberRunner.stepDefinitionsFunction)
+        expect(CucumberRunner.Cucumber).toHaveBeenCalledWith(cucumberRunner.features, cucumberRunner.stepDefinitionsFunction, {tags: []})
+      });
+
+      it('starts a Cucumber with the loaded features, step definitions, and options passed to it', function () {
+        cucumberRunner.startCucumberRun({tags: ["@my_tags"]});
+
+        expect(CucumberRunner.Cucumber).toHaveBeenCalledWith(cucumberRunner.features, cucumberRunner.stepDefinitionsFunction, {tags: ["@my_tags"]})
       });
 
       it('starts an HtmlListener to add to Cucumber', function () {
