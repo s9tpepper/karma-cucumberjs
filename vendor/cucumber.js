@@ -500,7 +500,23 @@ CucumberHTML.DOMFormatter = function(rootNode) {
 
   this.write = function(text) {
     currentStep.append('<pre class="embedded-text">' + text + '</pre>');
-  }
+  };
+
+  this.before = function(before) {
+    if(before.status != 'passed') {
+      currentElement = featureElement({keyword: 'Before', name: '', description: ''}, 'before');
+      currentStepIndex = 1;
+      populateStepError($('details', currentElement), before.error_message);
+    }
+  };
+
+  this.after = function(after) {
+    if(after.status != 'passed') {
+      currentElement = featureElement({keyword: 'After', name: '', description: ''}, 'after');
+      currentStepIndex++;
+      populateStepError($('details', currentElement), after.error_message);
+    }
+  };
 
   function featureElement(statement, itemtype) {
     var e = blockElement(currentFeature.children('details'), statement, itemtype);
@@ -603,22 +619,25 @@ if (typeof module !== 'undefined') {
 
 });
 
-require.define("/cucumber/ast",function(require,module,exports,__dirname,__filename,process){var Ast        = {};
-Ast.Assembler  = require('./ast/assembler');
-Ast.Background = require('./ast/background');
-Ast.DataTable  = require('./ast/data_table');
-Ast.DocString  = require('./ast/doc_string');
-Ast.Feature    = require('./ast/feature');
-Ast.Features   = require('./ast/features');
-Ast.Filter     = require('./ast/filter');
-Ast.Scenario   = require('./ast/scenario');
-Ast.Step       = require('./ast/step');
-Ast.Tag        = require('./ast/tag');
-module.exports = Ast;
+require.define("/cucumber/ast",function(require,module,exports,__dirname,__filename,process){var Ast             = {};
+Ast.Assembler       = require('./ast/assembler');
+Ast.Background      = require('./ast/background');
+Ast.DataTable       = require('./ast/data_table');
+Ast.DocString       = require('./ast/doc_string');
+Ast.Feature         = require('./ast/feature');
+Ast.Features        = require('./ast/features');
+Ast.Filter          = require('./ast/filter');
+Ast.Scenario        = require('./ast/scenario');
+Ast.ScenarioOutline = require('./ast/scenario_outline');
+Ast.OutlineStep     = require('./ast/outline_step');
+Ast.Examples        = require('./ast/examples');
+Ast.Step            = require('./ast/step');
+Ast.Tag             = require('./ast/tag');
+module.exports      = Ast;
 
 });
 
-require.define("/cucumber/ast/assembler",function(require,module,exports,__dirname,__filename,process){var Assembler = function(features, filter) {
+require.define("/cucumber/ast/assembler",function(require,module,exports,__dirname,__filename,process){var Assembler = function (features, filter) {
   var currentFeature, currentScenarioOrBackground, currentStep, suggestedFeature;
   var stashedTags = [];
 
@@ -662,7 +681,7 @@ require.define("/cucumber/ast/assembler",function(require,module,exports,__dirna
     applyCurrentFeatureTagsToElement: function applyCurrentFeatureTagsToElement(element) {
       var currentFeature = self.getCurrentFeature();
       var featureTags    = currentFeature.getTags();
-      element.addTags(featureTags);
+      element.addInheritedtags(featureTags);
     },
 
     applyStashedTagsToElement: function applyStashedTagsToElement(element) {
@@ -699,8 +718,17 @@ require.define("/cucumber/ast/assembler",function(require,module,exports,__dirna
       self.setCurrentScenarioOrBackground(scenario);
       if (filter.isElementEnrolled(scenario)) {
         var currentFeature = self.getCurrentFeature();
-        currentFeature.addScenario(scenario);
+        currentFeature.addFeatureElement(scenario);
       }
+    },
+
+    insertExamples: function insertExamples(examples) {
+      var currentScenarioOrBackground = self.getCurrentScenarioOrBackground();
+      if (currentScenarioOrBackground.payloadType == 'scenarioOutline')
+        currentScenarioOrBackground.setExamples(examples);
+      else
+        throw new Error("Examples are allowed inside scenario outlines only");
+      self.setCurrentStep(examples);
     },
 
     insertStep: function insertStep(step) {
@@ -713,7 +741,22 @@ require.define("/cucumber/ast/assembler",function(require,module,exports,__dirna
       self.stashTag(tag);
     },
 
+    convertScenarioOutlineToScenarios: function convertScenarioOutlineToScenarios(scenario){
+        var subScenarios = scenario.buildScenarios();
+        subScenarios.syncForEach(self.insertScenario);
+    },
+
+    convertScenarioOutlinesToScenarios: function convertScenarioOutlinesToScenarios(){
+      var currentFeature = self.getCurrentFeature();
+      var scenarios = currentFeature.getFeatureElements();
+
+      scenarios.syncForEach(function(scenario){
+          self.convertScenarioOutlineToScenarios(scenario);
+      });
+    },
+
     finish: function finish() {
+      self.convertScenarioOutlinesToScenarios();
       self.tryEnrollingSuggestedFeature();
     },
 
@@ -722,16 +765,16 @@ require.define("/cucumber/ast/assembler",function(require,module,exports,__dirna
     },
 
     isSuggestedFeatureEnrollable: function isSuggestedFeatureEnrollable() {
-      var enrollable = suggestedFeature && (suggestedFeature.hasScenarios() || filter.isElementEnrolled(suggestedFeature));
+      var enrollable = suggestedFeature && (suggestedFeature.hasFeatureElements() || filter.isElementEnrolled(suggestedFeature));
       return enrollable;
     },
 
     tryEnrollingSuggestedFeature: function tryEnrollingSuggestedFeature() {
       if (self.isSuggestedFeatureEnrollable())
-        self.enrolSuggestedFeature();
+        self.enrollSuggestedFeature();
     },
 
-    enrolSuggestedFeature: function enrolSuggestedFeature() {
+    enrollSuggestedFeature: function enrollSuggestedFeature() {
       features.addFeature(suggestedFeature);
       suggestedFeature = null;
     }
@@ -781,7 +824,16 @@ require.define("/cucumber/ast/background",function(require,module,exports,__dirn
 
  	  getSteps: function getSteps() {
       return steps;
- 	  }
+ 	  },
+
+    getMaxStepLength: function () {
+      var max = 0;
+      steps.syncForEach(function(step) {
+        var output = step.getKeyword() + step.getName();
+        if (output.length > max) max = output.length;
+      });
+      return max;
+    }
   };
   return self;
 };
@@ -807,7 +859,7 @@ Cucumber.Type                  = require('./cucumber/type');
 Cucumber.Util                  = require('./cucumber/util');
 Cucumber.VolatileConfiguration = require('./cucumber/volatile_configuration');
 
-Cucumber.VERSION               = "0.3.0";
+Cucumber.VERSION               = "0.4.0";
 
 module.exports                 = Cucumber;
 
@@ -972,16 +1024,21 @@ require.define("/cucumber/listener",function(require,module,exports,__dirname,__
     },
 
     buildHandlerNameForEvent: function buildHandlerNameForEvent(event) {
-      var handlerName =
-        Listener.EVENT_HANDLER_NAME_PREFIX +
-        event.getName() +
-        Listener.EVENT_HANDLER_NAME_SUFFIX;
-      return handlerName;
+      return self.buildHandlerName(event.getName());
     },
 
     getHandlerForEvent: function getHandlerForEvent(event) {
       var eventHandlerName = self.buildHandlerNameForEvent(event);
       return self[eventHandlerName];
+    },
+
+    buildHandlerName: function buildHandler(shortName) {
+      return Listener.EVENT_HANDLER_NAME_PREFIX + shortName + Listener.EVENT_HANDLER_NAME_SUFFIX;
+    },
+
+    setHandlerForEvent: function setHandlerForEvent(shortname, handler) {
+      var eventName = self.buildHandlerName(shortname);
+      self[eventName] = handler;
     }
   };
   return self;
@@ -990,6 +1047,7 @@ require.define("/cucumber/listener",function(require,module,exports,__dirname,__
 Listener.EVENT_HANDLER_NAME_PREFIX = 'handle';
 Listener.EVENT_HANDLER_NAME_SUFFIX = 'Event';
 
+Listener.Events            = require('./listener/events');
 Listener.Formatter         = require('./listener/formatter');
 Listener.PrettyFormatter   = require('./listener/pretty_formatter');
 Listener.ProgressFormatter = require('./listener/progress_formatter');
@@ -998,6 +1056,18 @@ Listener.StatsJournal      = require('./listener/stats_journal');
 Listener.SummaryFormatter  = require('./listener/summary_formatter');
 module.exports             = Listener;
 
+});
+
+require.define("/cucumber/listener/events",function(require,module,exports,__dirname,__filename,process){exports['BeforeFeatures'] = 'BeforeFeatures';
+exports['BeforeFeature']  = 'BeforeFeature';
+exports['Background']     = 'Background';
+exports['BeforeScenario'] = 'BeforeScenario';
+exports['BeforeStep']     = 'BeforeStep';
+exports['StepResult']     = 'StepResult';
+exports['AfterStep']      = 'AfterStep';
+exports['AfterScenario']  = 'AfterScenario';
+exports['AfterFeature']   = 'AfterFeature';
+exports['AfterFeatures']  = 'AfterFeatures';
 });
 
 require.define("/cucumber/listener/formatter",function(require,module,exports,__dirname,__filename,process){var Formatter = function (options) {
@@ -1031,10 +1101,15 @@ module.exports = Formatter;
 });
 
 require.define("/cucumber/listener/pretty_formatter",function(require,module,exports,__dirname,__filename,process){var PrettyFormatter = function(options) {
-  var Cucumber = require('../../cucumber');
+  var Cucumber         = require('../../cucumber');
 
+  var color            = Cucumber.Util.ConsoleColor;
   var self             = Cucumber.Listener.Formatter(options);
-  var summaryFormatter = Cucumber.Listener.SummaryFormatter({logToConsole: false});
+  var summaryFormatter = Cucumber.Listener.SummaryFormatter({
+    coffeeScriptSnippets: options.coffeeScriptSnippets,
+    logToConsole: false
+  });
+  var currentMaxStepLength = 0;
 
   var parentHear = self.hear;
   self.hear = function hear(event, callback) {
@@ -1045,14 +1120,39 @@ require.define("/cucumber/listener/pretty_formatter",function(require,module,exp
 
   self.handleBeforeFeatureEvent = function handleBeforeFeatureEvent(event, callback) {
     var feature = event.getPayloadItem('feature');
-    var source = feature.getKeyword() + ": " + feature.getName() + "\n\n";
+    var tags = feature.getTags();
+    var tagNames = [];
+    for (var idx = 0; idx < tags.length; idx++) {
+      tagNames.push(tags[idx].getName());
+    }
+    var source = color.format('tag', tagNames.join(" ")) + "\n" + feature.getKeyword() + ": " + feature.getName() + "\n";
     self.log(source);
+    self.logIndented(feature.getDescription() + "\n\n", 1);
     callback();
   };
 
   self.handleBeforeScenarioEvent = function handleBeforeScenarioEvent(event, callback) {
     var scenario = event.getPayloadItem('scenario');
-    var source = scenario.getKeyword() + ": " + scenario.getName() + "\n";
+    var tags = scenario.getOwnTags();
+    var tagNames = [];
+    for (var idx = 0; idx < tags.length; idx++) {
+      tagNames.push(tags[idx].getName());
+    }
+    var tagSource = color.format("tag", tagNames.join(" ")) + "\n" ;
+    var source = scenario.getKeyword() + ": " + scenario.getName();
+    var lineLengths = [source.length, scenario.getMaxStepLength()];
+    if (scenario.getBackground() !== undefined) {
+      lineLengths.push(scenario.getBackground().getMaxStepLength());
+    }
+    lineLengths.sort(function(a,b) { return b-a; });
+    currentMaxStepLength = lineLengths[0];
+
+    source = tagSource + self._pad(source, currentMaxStepLength + 3);
+
+    uri = color.format('comment', "# " + scenario.getUri().replace(process.cwd(),'').slice(1) + ":" + scenario.getLine());
+
+    source += uri + "\n";
+
     self.logIndented(source, 1);
     callback();
   };
@@ -1062,23 +1162,52 @@ require.define("/cucumber/listener/pretty_formatter",function(require,module,exp
     callback();
   };
 
+  self.applyColor = function (stepResult, source) {
+    if (stepResult.isFailed()) source = color.format('failed', source);
+    else if (stepResult.isPending()) source = color.format('pending',source);
+    else if (stepResult.isSkipped()) source = color.format('skipped',source);
+    else if (stepResult.isSuccessful()) source = color.format('passed',source);
+    else if (stepResult.isUndefined()) source = color.format('undefined',source);
+    return source;
+  };
+
+  self.setColorFormat = function (stepResult) {
+    if (stepResult.isFailed()) color.setFormat('failed');
+    else if (stepResult.isPending()) color.setFormat('pending');
+    else if (stepResult.isSkipped()) color.setFormat('skipped');
+    else if (stepResult.isSuccessful()) color.setFormat('passed');
+    else if (stepResult.isUndefined()) color.setFormat('undefined');
+  };
+
+  self.resetColorFormat = function() {
+    color.resetFormat();
+  }
+
   self.handleStepResultEvent = function handleStepResultEvent(event, callback) {
     var stepResult = event.getPayloadItem('stepResult');
     var step = stepResult.getStep();
-    var source = step.getKeyword() + step.getName() + "\n";
+
+    var uri = "";
+
+    uri = color.format('comment', "# " + step.getUri().replace(process.cwd(),'').slice(1) + ":" + step.getLine());
+
+    var source = self.applyColor(stepResult, step.getKeyword() + step.getName());
+
+    source = self._pad(source, currentMaxStepLength + 10);
+
+    source += uri + "\n";
     self.logIndented(source, 2);
 
     if (step.hasDataTable()) {
       var dataTable = step.getDataTable();
-      self.logDataTable(dataTable);
+      self.logDataTable(stepResult, dataTable);
     }
 
     if (step.hasDocString()) {
       var docString = step.getDocString();
-      self.logDocString(docString);
+      self.logDocString(stepResult, docString);
     }
 
-    stepResult.isFailed();
     if (stepResult.isFailed()) {
       var failure            = stepResult.getFailureException();
       var failureDescription = failure.stack || failure;
@@ -1094,28 +1223,28 @@ require.define("/cucumber/listener/pretty_formatter",function(require,module,exp
     callback();
   };
 
-  self.logDataTable = function logDataTable(dataTable) {
+  self.logDataTable = function logDataTable(stepResult, dataTable) {
     var rows         = dataTable.raw();
     var columnWidths = self._determineColumnWidthsFromRows(rows);
     var rowCount     = rows.length;
     var columnCount  = columnWidths.length;
-
     for (var rowIndex = 0; rowIndex < rowCount; rowIndex++) {
       var cells = rows[rowIndex];
       var line = "|";
       for (var columnIndex = 0; columnIndex < columnCount; columnIndex++) {
         var cell        = cells[columnIndex];
         var columnWidth = columnWidths[columnIndex];
-        line += " " + self._pad(cell, columnWidth) + " |"
+        line += " " + self.applyColor(stepResult, self._pad(cell, columnWidth)) + " |"
       }
       line += "\n";
       self.logIndented(line, 3);
     }
   };
 
-  self.logDocString = function logDocString(docString) {
-    var contents = docString.getContents();
-    self.logIndented('"""\n' + contents + '\n"""\n' , 3);
+  self.logDocString = function logDocString(stepResult, docString) {
+    var contents = '"""\n' + docString.getContents() + '\n"""\n';
+    contents = self.applyColor(stepResult, contents)
+    self.logIndented(contents, 3);
   };
 
   self.logIndented = function logIndented(text, level) {
@@ -1165,14 +1294,17 @@ module.exports = PrettyFormatter;
 
 });
 
-require.define("/cucumber/listener/progress_formatter",function(require,module,exports,__dirname,__filename,process){var ProgressFormatter = function(options) {
+require.define("/cucumber/listener/progress_formatter",function(require,module,exports,__dirname,__filename,process){var ConsoleColor = require('../util/colors');
+var ProgressFormatter = function(options) {
   var Cucumber = require('../../cucumber');
-
   if (!options)
     options = {};
 
   var self             = Cucumber.Listener.Formatter(options);
-  var summaryFormatter = Cucumber.Listener.SummaryFormatter({logToConsole: false});
+  var summaryFormatter = Cucumber.Listener.SummaryFormatter({
+    coffeeScriptSnippets: options.coffeeScriptSnippets,
+    logToConsole: false
+  });
 
   var parentHear = self.hear;
   self.hear = function hear(event, callback) {
@@ -1225,12 +1357,100 @@ require.define("/cucumber/listener/progress_formatter",function(require,module,e
 
   return self;
 };
-ProgressFormatter.PASSED_STEP_CHARACTER    = '.';
-ProgressFormatter.SKIPPED_STEP_CHARACTER   = '-';
-ProgressFormatter.UNDEFINED_STEP_CHARACTER = 'U';
-ProgressFormatter.PENDING_STEP_CHARACTER   = 'P';
-ProgressFormatter.FAILED_STEP_CHARACTER    = 'F';
+ProgressFormatter.PASSED_STEP_CHARACTER    = ConsoleColor.format('passed', '.');
+ProgressFormatter.SKIPPED_STEP_CHARACTER   = ConsoleColor.format('skipped', '-');
+ProgressFormatter.UNDEFINED_STEP_CHARACTER = ConsoleColor.format('undefined', 'U');
+ProgressFormatter.PENDING_STEP_CHARACTER   = ConsoleColor.format('pending', 'P');
+ProgressFormatter.FAILED_STEP_CHARACTER    = ConsoleColor.format('failed', 'F');
 module.exports                             = ProgressFormatter;
+
+});
+
+require.define("/cucumber/util/colors",function(require,module,exports,__dirname,__filename,process){var ConsoleColor = {
+  ANSICodes: {
+    'reset'         : '\033[0m',
+    'bold'          : '\033[1m',
+    'faint'         : '\033[2m',
+    'grey'          : '\033[2m\033[37m',
+    'italic'        : '\033[3m',
+    'underline'     : '\033[4m',
+    'blink'         : '\033[5m',
+    'black'         : '\033[30m',
+    'red'           : '\033[31m',
+    'green'         : '\033[32m',
+    'yellow'        : '\033[33m',
+    'blue'          : '\033[34m',
+    'magenta'       : '\033[35m',
+    'cyan'          : '\033[36m',
+    'white'         : '\033[37m'
+  },
+
+  formatColors: {
+    'undefined'     : ['yellow'],
+    'pending'       : ['yellow'],
+    'pending_param' : ['yellow','bold'],
+    'failed'        : ['red'],
+    'failed_param'  : ['red','bold'],
+    'passed'        : ['green'],
+    'passed_param'  : ['green','bold'],
+    'skipped'       : ['cyan'],
+    'skipped_param' : ['cyan','bold'],
+    'comment'       : ['grey'],
+    'tag'           : ['cyan']
+  },
+
+  color: function (colors, text, noReset) {
+    code = '';
+    if (Object.prototype.toString.call(colors).slice(8,-1) !== 'Array')
+      colors = [colors];
+    for (var idx = 0; idx < colors.length; idx++) {
+      // Check if color is valid
+      if(this.ANSICodes[colors[idx]] !== undefined) {
+        code += this.ANSICodes[colors[idx]];
+      }
+    }
+    lines = text.split("\n");
+    for (var lineNumber = 0; lineNumber < lines.length; lineNumber++) {
+      if(lines[lineNumber].length > 0) {
+        lines[lineNumber] = code + lines[lineNumber] + this.ANSICodes['reset'];
+      }
+    }
+    return lines.join("\n");
+  },
+
+  format: function(format, text, noReset) {
+    // Check environment for color codes
+    var envColors = process.env.CUCUMBER_COLORS;
+    if(envColors !== undefined && envColors.length > 0) {
+      envColors = process.env.CUCUMBER_COLORS.split(':');
+      for (var idx = 0; idx < envColors.length; idx++) {
+        var envColor = envColors[idx].split('=');
+        // Break if bad value
+        if(envColor[1] === undefined) break;
+        var newColors = envColor[1].split(',');
+        // Assign environment colors only if they are valid
+        var isValidColor = true;
+        for (var idx2 = 0; idx2 < newColors.length; idx2++) {
+          if (this.ANSICodes[newColors[idx2]] === undefined) isValidColor = false;
+        }
+        if (isValidColor && this.formatColors[envColor[0]] !== undefined) {
+          this.formatColors[envColor[0]] = newColors;
+        }
+      }
+    }
+    format = this.formatColors[format];
+    return this.color(format, text, noReset);
+  },
+
+  setFormat: function(format) {
+    process.stdout.write(this.format(format,'',true));
+  },
+
+  resetFormat: function(format) {
+    process.stdout.write(this.color('reset','',true));
+  }
+};
+module.exports = ConsoleColor;
 
 });
 
@@ -1301,7 +1521,7 @@ require.define("/cucumber/listener/json_formatter",function(require,module,expor
 
   self.handleBeforeFeatureEvent = function handleBeforeFeatureEvent(event, callback) {
     var feature      = event.getPayloadItem('feature');
-    currentFeatureId = feature.getName().replace(' ', '-'); // FIXME: wrong abstraction level, this should be encapsulated "somewhere"
+    currentFeatureId = feature.getName().replace(/ /g, '-'); // FIXME: wrong abstraction level, this should be encapsulated "somewhere"
 
     var featureProperties = {
       id:          currentFeatureId,
@@ -1360,6 +1580,7 @@ require.define("/cucumber/listener/json_formatter",function(require,module,expor
 
     if (stepResult.isSuccessful()) {
       resultStatus = 'passed';
+      stepOutput['duration'] = stepResult.getDuration();
     }
     else if (stepResult.isPending()) {
       resultStatus = 'pending';
@@ -1376,6 +1597,7 @@ require.define("/cucumber/listener/json_formatter",function(require,module,expor
       if (failureMessage) {
         stepOutput['error_message'] = (failureMessage.stack || failureMessage);
       }
+      stepOutput['duration'] = stepResult.getDuration();
     }
 
     stepOutput['status'] = resultStatus;
@@ -1401,10 +1623,10 @@ module.exports = JsonFormatter;
 require.define("/node_modules/gherkin/lib/gherkin/formatter/json_formatter.js",function(require,module,exports,__dirname,__filename,process){// This is a straight port of json_formatter.rb
 var JSONFormatter = function(io) {
     var feature_hashes = [];
-	var uri, feature_hash, current_step_or_hook;
+    var uri, feature_hash, current_step_or_hook;
 
     this.done = function() {
-        io.write(JSON.stringify(feature_hashes));
+        io.write(JSON.stringify(feature_hashes, null, 2));
     };
 
     this.uri = function(_uri) {
@@ -1434,16 +1656,16 @@ var JSONFormatter = function(io) {
     };
 
     this.step = function(step) {
-	    current_step_or_hook = step;
-	    steps().push(current_step_or_hook);
+        current_step_or_hook = step;
+        steps().push(current_step_or_hook);
     }
     
     this.match = function(match) {
-	    current_step_or_hook['match'] = match;
+        current_step_or_hook['match'] = match;
     }
 
     this.result = function(result) {
-		current_step_or_hook['result'] = result;
+        current_step_or_hook['result'] = result;
     }
 
     this.before = function(match, result) {
@@ -1455,7 +1677,7 @@ var JSONFormatter = function(io) {
     }
 
     this.embedding = function(mime_type, data) {
-	    embeddings().push({'mime_type': mime_type, 'data': encode64s(data)})
+        embeddings().push({'mime_type': mime_type, 'data': encode64s(data)})
     }
 
     this.write = function(text) {
@@ -1463,7 +1685,16 @@ var JSONFormatter = function(io) {
     };
 
     this.eof = function() {};
-    
+
+    this.append_duration = function(timestamp) {
+        if (current_step_or_hook['result']) {
+            timestamp = timestamp * 1000000000
+            rshash = current_step_or_hook['result']
+            rshash['duration'] = timestamp
+            current_step_or_hook['result'] = rshash
+        }
+    }
+
     // "private" methods
 
     function add_hook(match, result, hook) {
@@ -1768,10 +1999,12 @@ module.exports = StatsJournal;
 require.define("/cucumber/listener/summary_formatter",function(require,module,exports,__dirname,__filename,process){var SummaryFormatter = function (options) {
   var Cucumber = require('../../cucumber');
 
+
   var failedScenarioLogBuffer = "";
   var undefinedStepLogBuffer  = "";
   var failedStepResults       = Cucumber.Type.Collection();
   var statsJournal            = Cucumber.Listener.StatsJournal();
+  var color                   = Cucumber.Util.ConsoleColor;
 
   var self = Cucumber.Listener.Formatter(options);
 
@@ -1826,9 +2059,14 @@ require.define("/cucumber/listener/summary_formatter",function(require,module,ex
   };
 
   self.storeUndefinedStep = function storeUndefinedStep(step) {
-    var snippetBuilder = Cucumber.SupportCode.StepDefinitionSnippetBuilder(step);
+    var snippetBuilder = Cucumber.SupportCode.StepDefinitionSnippetBuilder(step, self.getStepDefinitionSyntax());
     var snippet        = snippetBuilder.buildSnippet();
     self.appendStringToUndefinedStepLogBuffer(snippet);
+  };
+
+  self.getStepDefinitionSyntax = function getStepDefinitionSyntax() {
+    var syntax = options.coffeeScriptSnippets ? 'CoffeeScript' : 'JavaScript';
+    return new Cucumber.SupportCode.StepDefinitionSnippetBuilderSyntax[syntax]();
   };
 
   self.appendStringToFailedScenarioLogBuffer = function appendStringToFailedScenarioLogBuffer(string) {
@@ -1885,13 +2123,13 @@ require.define("/cucumber/listener/summary_formatter",function(require,module,ex
     self.log(scenarioCount + " scenario" + (scenarioCount != 1 ? "s" : ""));
     if (scenarioCount > 0 ) {
       if (failedScenarioCount > 0)
-        details.push(failedScenarioCount + " failed");
+        details.push(color.format('failed', failedScenarioCount + " failed"));
       if (undefinedScenarioCount > 0)
-        details.push(undefinedScenarioCount + " undefined");
+        details.push(color.format('undefined', undefinedScenarioCount + " undefined"));
       if (pendingScenarioCount > 0)
-        details.push(pendingScenarioCount + " pending");
+        details.push(color.format('pending', pendingScenarioCount + " pending"));
       if (passedScenarioCount > 0)
-        details.push(passedScenarioCount + " passed");
+        details.push(color.format('passed', passedScenarioCount + " passed"));
       self.log(" (" + details.join(', ') + ")");
     }
     self.log("\n");
@@ -1909,15 +2147,15 @@ require.define("/cucumber/listener/summary_formatter",function(require,module,ex
     self.log(stepCount + " step" + (stepCount != 1 ? "s" : ""));
     if (stepCount > 0) {
       if (failedStepCount > 0)
-        details.push(failedStepCount    + " failed");
+        details.push(color.format('failed', failedStepCount    + " failed"));
       if (undefinedStepCount > 0)
-        details.push(undefinedStepCount + " undefined");
+        details.push(color.format('undefined', undefinedStepCount + " undefined"));
       if (pendingStepCount > 0)
-        details.push(pendingStepCount   + " pending");
+        details.push(color.format('pending', pendingStepCount   + " pending"));
       if (skippedStepCount > 0)
-        details.push(skippedStepCount   + " skipped");
+        details.push(color.format('skipped', skippedStepCount   + " skipped"));
       if (passedStepCount > 0)
-        details.push(passedStepCount    + " passed");
+        details.push(color.format('passed', passedStepCount    + " passed"));
       self.log(" (" + details.join(', ') + ")");
     }
     self.log("\n");
@@ -1925,8 +2163,8 @@ require.define("/cucumber/listener/summary_formatter",function(require,module,ex
 
   self.logUndefinedStepSnippets = function logUndefinedStepSnippets() {
     var undefinedStepLogBuffer = self.getUndefinedStepLogBuffer();
-    self.log("\nYou can implement step definitions for undefined steps with these snippets:\n\n");
-    self.log(undefinedStepLogBuffer);
+    self.log(color.format('pending', "\nYou can implement step definitions for undefined steps with these snippets:\n\n"));
+    self.log(color.format('pending', undefinedStepLogBuffer));
   };
 
   return self;
@@ -1937,7 +2175,6 @@ module.exports = SummaryFormatter;
 
 require.define("/cucumber/parser",function(require,module,exports,__dirname,__filename,process){var Parser = function(featureSources, astFilter) {
   var Gherkin      = require('gherkin');
-  var GherkinLexer = require('gherkin/lib/gherkin/lexer/en');
   var Cucumber     = require('../cucumber');
 
   var features     = Cucumber.Ast.Features();
@@ -1946,13 +2183,22 @@ require.define("/cucumber/parser",function(require,module,exports,__dirname,__fi
 
   var self = {
     parse: function parse() {
-      var eventHandler = self.getEventHandlers();
-      var lexer = new GherkinLexer(self.getEventHandlers());
+      var lexers = {};
+      var lexer = function (lang) {
+        if (!(lang in lexers)) {
+          lexers[lang] = new (Gherkin.Lexer(lang))(self.getEventHandlers());
+        }
+
+        return lexers[lang];
+      };
+
       for (i in featureSources) {
         var currentSourceUri = featureSources[i][Parser.FEATURE_NAME_SOURCE_PAIR_URI_INDEX];
         var featureSource    = featureSources[i][Parser.FEATURE_NAME_SOURCE_PAIR_SOURCE_INDEX];
         self.setCurrentSourceUri(currentSourceUri);
-        lexer.scan(featureSource);
+        var languageMatch = /^\s*#\s*language:\s*([a-z_]*)/.exec(featureSource.toString());
+        var language = languageMatch == null ? 'en' : languageMatch[1];
+        lexer(language).scan(featureSource);
       }
       return features;
     },
@@ -2030,12 +2276,15 @@ require.define("/cucumber/parser",function(require,module,exports,__dirname,__fi
     },
 
     handleScenarioOutline: function handleScenarioOutline(keyword, name, description, line) {
-      throw new Error("Scenario outlines are not supported yet. See https://github.com/cucumber/cucumber-js/issues/10");
+      var uri     = self.getCurrentSourceUri();
+      var outline = Cucumber.Ast.ScenarioOutline(keyword, name, description, uri, line);
+      astAssembler.insertScenario(outline);
     },
 
     handleExamples: function handleExamples(keyword, name, description, line) {
-      throw new Error("Examples are not supported yet. See https://github.com/cucumber/cucumber-js/issues/10");
-    }
+      var examples = Cucumber.Ast.Examples(keyword, name, description, line);
+      astAssembler.insertExamples(examples);
+    },
   };
   return self;
 };
@@ -2070,1138 +2319,6 @@ module.exports.connect = function(path) {
     }
   };
 };
-
-});
-
-require.define("/node_modules/gherkin/lib/gherkin/lexer/en.js",function(require,module,exports,__dirname,__filename,process){
-/* line 1 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-;(function() {
-
-
-/* line 126 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-
-
-/* line 11 "js/lib/gherkin/lexer/en.js" */
-var _lexer_actions = [
-	0, 1, 0, 1, 1, 1, 2, 1, 
-	3, 1, 4, 1, 5, 1, 6, 1, 
-	7, 1, 8, 1, 9, 1, 10, 1, 
-	11, 1, 12, 1, 13, 1, 16, 1, 
-	17, 1, 18, 1, 19, 1, 20, 1, 
-	21, 1, 22, 1, 23, 2, 2, 18, 
-	2, 3, 4, 2, 13, 0, 2, 14, 
-	15, 2, 17, 0, 2, 17, 1, 2, 
-	17, 16, 2, 17, 19, 2, 18, 6, 
-	2, 18, 7, 2, 18, 8, 2, 18, 
-	9, 2, 18, 10, 2, 18, 16, 2, 
-	20, 21, 2, 22, 0, 2, 22, 1, 
-	2, 22, 16, 2, 22, 19, 3, 4, 
-	14, 15, 3, 5, 14, 15, 3, 11, 
-	14, 15, 3, 12, 14, 15, 3, 13, 
-	14, 15, 3, 14, 15, 18, 3, 17, 
-	0, 11, 3, 17, 14, 15, 4, 2, 
-	14, 15, 18, 4, 3, 4, 14, 15, 
-	4, 17, 0, 14, 15, 5, 17, 0, 
-	11, 14, 15
-];
-
-var _lexer_key_offsets = [
-	0, 0, 19, 37, 38, 39, 41, 43, 
-	48, 53, 58, 63, 67, 71, 73, 74, 
-	75, 76, 77, 78, 79, 80, 81, 82, 
-	83, 84, 85, 86, 87, 88, 89, 91, 
-	93, 98, 105, 110, 112, 113, 114, 115, 
-	116, 117, 118, 119, 120, 132, 134, 136, 
-	138, 140, 142, 144, 146, 148, 150, 152, 
-	154, 156, 158, 160, 162, 164, 166, 168, 
-	170, 172, 174, 192, 194, 195, 196, 197, 
-	198, 199, 200, 201, 202, 203, 204, 205, 
-	220, 222, 224, 226, 228, 230, 232, 234, 
-	236, 238, 240, 242, 244, 246, 248, 250, 
-	253, 255, 257, 259, 261, 263, 265, 267, 
-	269, 272, 274, 276, 278, 280, 282, 284, 
-	286, 288, 290, 292, 294, 296, 298, 300, 
-	302, 304, 306, 308, 310, 312, 314, 316, 
-	318, 320, 322, 324, 326, 329, 332, 334, 
-	336, 338, 340, 342, 344, 346, 348, 350, 
-	352, 354, 356, 358, 359, 360, 361, 362, 
-	363, 364, 365, 366, 367, 368, 369, 370, 
-	371, 372, 373, 374, 375, 376, 377, 378, 
-	387, 389, 391, 393, 395, 397, 399, 401, 
-	403, 405, 407, 409, 411, 413, 415, 417, 
-	419, 421, 423, 425, 427, 429, 431, 433, 
-	435, 437, 438, 439, 440, 441, 442, 443, 
-	444, 445, 446, 447, 448, 449, 450, 451, 
-	452, 453, 454, 457, 459, 460, 461, 462, 
-	463, 464, 465, 466, 467, 468, 483, 485, 
-	487, 489, 491, 493, 495, 497, 499, 501, 
-	503, 505, 507, 509, 511, 513, 516, 518, 
-	520, 522, 524, 526, 528, 530, 532, 535, 
-	537, 539, 541, 543, 545, 547, 549, 551, 
-	553, 555, 557, 559, 561, 563, 565, 567, 
-	569, 571, 573, 575, 577, 579, 581, 583, 
-	585, 587, 589, 591, 592, 593, 594, 595, 
-	596, 597, 598, 599, 614, 616, 618, 620, 
-	622, 624, 626, 628, 630, 632, 634, 636, 
-	638, 640, 642, 644, 647, 649, 651, 653, 
-	655, 657, 659, 661, 664, 666, 668, 670, 
-	672, 674, 676, 678, 680, 683, 685, 687, 
-	689, 691, 693, 695, 697, 699, 701, 703, 
-	705, 707, 709, 711, 713, 715, 717, 719, 
-	721, 723, 725, 727, 729, 731, 733, 735, 
-	738, 741, 743, 745, 747, 749, 751, 753, 
-	755, 757, 759, 761, 763, 765, 766, 770, 
-	776, 779, 781, 787, 805, 808, 810, 812, 
-	814, 816, 818, 820, 822, 824, 826, 828, 
-	830, 832, 834, 836, 838, 840, 842, 844, 
-	846, 848, 850, 852, 854, 856, 858, 860, 
-	862, 864, 866, 868, 870, 872, 874, 876, 
-	878, 880, 882, 884, 888, 891, 893, 895, 
-	897, 899, 901, 903, 905, 907, 909, 911, 
-	913, 914, 915, 916
-];
-
-var _lexer_trans_keys = [
-	10, 32, 34, 35, 37, 42, 64, 65, 
-	66, 69, 70, 71, 83, 84, 87, 124, 
-	239, 9, 13, 10, 32, 34, 35, 37, 
-	42, 64, 65, 66, 69, 70, 71, 83, 
-	84, 87, 124, 9, 13, 34, 34, 10, 
-	13, 10, 13, 10, 32, 34, 9, 13, 
-	10, 32, 34, 9, 13, 10, 32, 34, 
-	9, 13, 10, 32, 34, 9, 13, 10, 
-	32, 9, 13, 10, 32, 9, 13, 10, 
-	13, 10, 95, 70, 69, 65, 84, 85, 
-	82, 69, 95, 69, 78, 68, 95, 37, 
-	32, 10, 13, 10, 13, 13, 32, 64, 
-	9, 10, 9, 10, 13, 32, 64, 11, 
-	12, 10, 32, 64, 9, 13, 98, 110, 
-	105, 108, 105, 116, 121, 58, 10, 10, 
-	10, 32, 35, 37, 64, 65, 66, 69, 
-	70, 83, 9, 13, 10, 95, 10, 70, 
-	10, 69, 10, 65, 10, 84, 10, 85, 
-	10, 82, 10, 69, 10, 95, 10, 69, 
-	10, 78, 10, 68, 10, 95, 10, 37, 
-	10, 98, 10, 105, 10, 108, 10, 105, 
-	10, 116, 10, 121, 10, 58, 10, 32, 
-	34, 35, 37, 42, 64, 65, 66, 69, 
-	70, 71, 83, 84, 87, 124, 9, 13, 
-	97, 117, 99, 107, 103, 114, 111, 117, 
-	110, 100, 58, 10, 10, 10, 32, 35, 
-	37, 42, 64, 65, 66, 70, 71, 83, 
-	84, 87, 9, 13, 10, 95, 10, 70, 
-	10, 69, 10, 65, 10, 84, 10, 85, 
-	10, 82, 10, 69, 10, 95, 10, 69, 
-	10, 78, 10, 68, 10, 95, 10, 37, 
-	10, 32, 10, 98, 110, 10, 105, 10, 
-	108, 10, 105, 10, 116, 10, 121, 10, 
-	58, 10, 100, 10, 117, 10, 115, 116, 
-	10, 105, 10, 110, 10, 101, 10, 115, 
-	10, 115, 10, 32, 10, 78, 10, 101, 
-	10, 101, 10, 100, 10, 101, 10, 97, 
-	10, 116, 10, 117, 10, 114, 10, 101, 
-	10, 105, 10, 118, 10, 101, 10, 110, 
-	10, 99, 10, 101, 10, 110, 10, 97, 
-	10, 114, 10, 105, 10, 111, 10, 32, 
-	58, 10, 79, 84, 10, 117, 10, 116, 
-	10, 108, 10, 105, 10, 110, 10, 101, 
-	10, 109, 10, 112, 10, 108, 10, 97, 
-	10, 116, 10, 104, 115, 116, 105, 110, 
-	101, 115, 115, 32, 78, 101, 101, 100, 
-	120, 97, 109, 112, 108, 101, 115, 58, 
-	10, 10, 10, 32, 35, 65, 66, 70, 
-	124, 9, 13, 10, 98, 10, 105, 10, 
-	108, 10, 105, 10, 116, 10, 121, 10, 
-	58, 10, 117, 10, 115, 10, 105, 10, 
-	110, 10, 101, 10, 115, 10, 115, 10, 
-	32, 10, 78, 10, 101, 10, 101, 10, 
-	100, 10, 101, 10, 97, 10, 116, 10, 
-	117, 10, 114, 10, 101, 101, 97, 116, 
-	117, 114, 101, 105, 118, 101, 110, 99, 
-	101, 110, 97, 114, 105, 111, 32, 58, 
-	115, 79, 84, 117, 116, 108, 105, 110, 
-	101, 58, 10, 10, 10, 32, 35, 37, 
-	42, 64, 65, 66, 70, 71, 83, 84, 
-	87, 9, 13, 10, 95, 10, 70, 10, 
-	69, 10, 65, 10, 84, 10, 85, 10, 
-	82, 10, 69, 10, 95, 10, 69, 10, 
-	78, 10, 68, 10, 95, 10, 37, 10, 
-	32, 10, 98, 110, 10, 105, 10, 108, 
-	10, 105, 10, 116, 10, 121, 10, 58, 
-	10, 100, 10, 117, 10, 115, 116, 10, 
-	105, 10, 110, 10, 101, 10, 115, 10, 
-	115, 10, 32, 10, 78, 10, 101, 10, 
-	101, 10, 100, 10, 101, 10, 97, 10, 
-	116, 10, 117, 10, 114, 10, 101, 10, 
-	105, 10, 118, 10, 101, 10, 110, 10, 
-	99, 10, 101, 10, 110, 10, 97, 10, 
-	114, 10, 105, 10, 111, 10, 104, 101, 
-	109, 112, 108, 97, 116, 10, 10, 10, 
-	32, 35, 37, 42, 64, 65, 66, 70, 
-	71, 83, 84, 87, 9, 13, 10, 95, 
-	10, 70, 10, 69, 10, 65, 10, 84, 
-	10, 85, 10, 82, 10, 69, 10, 95, 
-	10, 69, 10, 78, 10, 68, 10, 95, 
-	10, 37, 10, 32, 10, 98, 110, 10, 
-	105, 10, 108, 10, 105, 10, 116, 10, 
-	121, 10, 58, 10, 100, 10, 97, 117, 
-	10, 99, 10, 107, 10, 103, 10, 114, 
-	10, 111, 10, 117, 10, 110, 10, 100, 
-	10, 115, 116, 10, 105, 10, 110, 10, 
-	101, 10, 115, 10, 115, 10, 32, 10, 
-	78, 10, 101, 10, 101, 10, 101, 10, 
-	97, 10, 116, 10, 117, 10, 114, 10, 
-	101, 10, 105, 10, 118, 10, 101, 10, 
-	110, 10, 99, 10, 101, 10, 110, 10, 
-	97, 10, 114, 10, 105, 10, 111, 10, 
-	32, 58, 10, 79, 84, 10, 117, 10, 
-	116, 10, 108, 10, 105, 10, 110, 10, 
-	101, 10, 109, 10, 112, 10, 108, 10, 
-	97, 10, 116, 10, 104, 104, 32, 124, 
-	9, 13, 10, 32, 92, 124, 9, 13, 
-	10, 92, 124, 10, 92, 10, 32, 92, 
-	124, 9, 13, 10, 32, 34, 35, 37, 
-	42, 64, 65, 66, 69, 70, 71, 83, 
-	84, 87, 124, 9, 13, 10, 97, 117, 
-	10, 99, 10, 107, 10, 103, 10, 114, 
-	10, 111, 10, 117, 10, 110, 10, 100, 
-	10, 115, 10, 105, 10, 110, 10, 101, 
-	10, 115, 10, 115, 10, 32, 10, 78, 
-	10, 101, 10, 101, 10, 120, 10, 97, 
-	10, 109, 10, 112, 10, 108, 10, 101, 
-	10, 115, 10, 101, 10, 97, 10, 116, 
-	10, 117, 10, 114, 10, 101, 10, 99, 
-	10, 101, 10, 110, 10, 97, 10, 114, 
-	10, 105, 10, 111, 10, 32, 58, 115, 
-	10, 79, 84, 10, 117, 10, 116, 10, 
-	108, 10, 105, 10, 110, 10, 101, 10, 
-	109, 10, 112, 10, 108, 10, 97, 10, 
-	116, 100, 187, 191, 0
-];
-
-var _lexer_single_lengths = [
-	0, 17, 16, 1, 1, 2, 2, 3, 
-	3, 3, 3, 2, 2, 2, 1, 1, 
-	1, 1, 1, 1, 1, 1, 1, 1, 
-	1, 1, 1, 1, 1, 1, 2, 2, 
-	3, 5, 3, 2, 1, 1, 1, 1, 
-	1, 1, 1, 1, 10, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 16, 2, 1, 1, 1, 1, 
-	1, 1, 1, 1, 1, 1, 1, 13, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 3, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	3, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 3, 3, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 1, 1, 1, 1, 1, 
-	1, 1, 1, 1, 1, 1, 1, 1, 
-	1, 1, 1, 1, 1, 1, 1, 7, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 1, 1, 1, 1, 1, 1, 1, 
-	1, 1, 1, 1, 1, 1, 1, 1, 
-	1, 1, 3, 2, 1, 1, 1, 1, 
-	1, 1, 1, 1, 1, 13, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 3, 2, 2, 
-	2, 2, 2, 2, 2, 2, 3, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 1, 1, 1, 1, 1, 
-	1, 1, 1, 13, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 3, 2, 2, 2, 2, 
-	2, 2, 2, 3, 2, 2, 2, 2, 
-	2, 2, 2, 2, 3, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 3, 
-	3, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 1, 2, 4, 
-	3, 2, 4, 16, 3, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	2, 2, 2, 4, 3, 2, 2, 2, 
-	2, 2, 2, 2, 2, 2, 2, 2, 
-	1, 1, 1, 0
-];
-
-var _lexer_range_lengths = [
-	0, 1, 1, 0, 0, 0, 0, 1, 
-	1, 1, 1, 1, 1, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	1, 1, 1, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 1, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 1, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 1, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 1, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 1, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 1, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 1, 1, 
-	0, 0, 1, 1, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0
-];
-
-var _lexer_index_offsets = [
-	0, 0, 19, 37, 39, 41, 44, 47, 
-	52, 57, 62, 67, 71, 75, 78, 80, 
-	82, 84, 86, 88, 90, 92, 94, 96, 
-	98, 100, 102, 104, 106, 108, 110, 113, 
-	116, 121, 128, 133, 136, 138, 140, 142, 
-	144, 146, 148, 150, 152, 164, 167, 170, 
-	173, 176, 179, 182, 185, 188, 191, 194, 
-	197, 200, 203, 206, 209, 212, 215, 218, 
-	221, 224, 227, 245, 248, 250, 252, 254, 
-	256, 258, 260, 262, 264, 266, 268, 270, 
-	285, 288, 291, 294, 297, 300, 303, 306, 
-	309, 312, 315, 318, 321, 324, 327, 330, 
-	334, 337, 340, 343, 346, 349, 352, 355, 
-	358, 362, 365, 368, 371, 374, 377, 380, 
-	383, 386, 389, 392, 395, 398, 401, 404, 
-	407, 410, 413, 416, 419, 422, 425, 428, 
-	431, 434, 437, 440, 443, 447, 451, 454, 
-	457, 460, 463, 466, 469, 472, 475, 478, 
-	481, 484, 487, 490, 492, 494, 496, 498, 
-	500, 502, 504, 506, 508, 510, 512, 514, 
-	516, 518, 520, 522, 524, 526, 528, 530, 
-	539, 542, 545, 548, 551, 554, 557, 560, 
-	563, 566, 569, 572, 575, 578, 581, 584, 
-	587, 590, 593, 596, 599, 602, 605, 608, 
-	611, 614, 616, 618, 620, 622, 624, 626, 
-	628, 630, 632, 634, 636, 638, 640, 642, 
-	644, 646, 648, 652, 655, 657, 659, 661, 
-	663, 665, 667, 669, 671, 673, 688, 691, 
-	694, 697, 700, 703, 706, 709, 712, 715, 
-	718, 721, 724, 727, 730, 733, 737, 740, 
-	743, 746, 749, 752, 755, 758, 761, 765, 
-	768, 771, 774, 777, 780, 783, 786, 789, 
-	792, 795, 798, 801, 804, 807, 810, 813, 
-	816, 819, 822, 825, 828, 831, 834, 837, 
-	840, 843, 846, 849, 851, 853, 855, 857, 
-	859, 861, 863, 865, 880, 883, 886, 889, 
-	892, 895, 898, 901, 904, 907, 910, 913, 
-	916, 919, 922, 925, 929, 932, 935, 938, 
-	941, 944, 947, 950, 954, 957, 960, 963, 
-	966, 969, 972, 975, 978, 982, 985, 988, 
-	991, 994, 997, 1000, 1003, 1006, 1009, 1012, 
-	1015, 1018, 1021, 1024, 1027, 1030, 1033, 1036, 
-	1039, 1042, 1045, 1048, 1051, 1054, 1057, 1060, 
-	1064, 1068, 1071, 1074, 1077, 1080, 1083, 1086, 
-	1089, 1092, 1095, 1098, 1101, 1104, 1106, 1110, 
-	1116, 1120, 1123, 1129, 1147, 1151, 1154, 1157, 
-	1160, 1163, 1166, 1169, 1172, 1175, 1178, 1181, 
-	1184, 1187, 1190, 1193, 1196, 1199, 1202, 1205, 
-	1208, 1211, 1214, 1217, 1220, 1223, 1226, 1229, 
-	1232, 1235, 1238, 1241, 1244, 1247, 1250, 1253, 
-	1256, 1259, 1262, 1265, 1270, 1274, 1277, 1280, 
-	1283, 1286, 1289, 1292, 1295, 1298, 1301, 1304, 
-	1307, 1309, 1311, 1313
-];
-
-var _lexer_indicies = [
-	2, 1, 3, 4, 5, 6, 7, 8, 
-	9, 10, 11, 12, 13, 14, 14, 15, 
-	16, 1, 0, 2, 1, 3, 4, 5, 
-	6, 7, 8, 9, 10, 11, 12, 13, 
-	14, 14, 15, 1, 0, 17, 0, 18, 
-	0, 20, 21, 19, 23, 24, 22, 27, 
-	26, 28, 26, 25, 31, 30, 32, 30, 
-	29, 31, 30, 33, 30, 29, 31, 30, 
-	34, 30, 29, 36, 35, 35, 0, 2, 
-	37, 37, 0, 39, 40, 38, 2, 0, 
-	41, 0, 42, 0, 43, 0, 44, 0, 
-	45, 0, 46, 0, 47, 0, 48, 0, 
-	49, 0, 50, 0, 51, 0, 52, 0, 
-	53, 0, 54, 0, 55, 0, 57, 58, 
-	56, 60, 61, 59, 0, 0, 0, 0, 
-	62, 63, 64, 63, 63, 66, 65, 62, 
-	2, 67, 7, 67, 0, 68, 69, 0, 
-	70, 0, 71, 0, 72, 0, 73, 0, 
-	74, 0, 75, 0, 77, 76, 79, 78, 
-	79, 80, 81, 82, 81, 83, 84, 85, 
-	86, 87, 80, 78, 79, 88, 78, 79, 
-	89, 78, 79, 90, 78, 79, 91, 78, 
-	79, 92, 78, 79, 93, 78, 79, 94, 
-	78, 79, 95, 78, 79, 96, 78, 79, 
-	97, 78, 79, 98, 78, 79, 99, 78, 
-	79, 100, 78, 79, 101, 78, 79, 102, 
-	78, 79, 103, 78, 79, 104, 78, 79, 
-	105, 78, 79, 106, 78, 79, 107, 78, 
-	79, 108, 78, 110, 109, 111, 112, 113, 
-	114, 115, 116, 117, 118, 119, 120, 121, 
-	122, 122, 123, 109, 0, 124, 125, 0, 
-	126, 0, 127, 0, 128, 0, 129, 0, 
-	130, 0, 131, 0, 132, 0, 133, 0, 
-	134, 0, 136, 135, 138, 137, 138, 139, 
-	140, 141, 142, 140, 143, 144, 145, 146, 
-	147, 148, 148, 139, 137, 138, 149, 137, 
-	138, 150, 137, 138, 151, 137, 138, 152, 
-	137, 138, 153, 137, 138, 154, 137, 138, 
-	155, 137, 138, 156, 137, 138, 157, 137, 
-	138, 158, 137, 138, 159, 137, 138, 160, 
-	137, 138, 161, 137, 138, 162, 137, 138, 
-	163, 137, 138, 164, 165, 137, 138, 166, 
-	137, 138, 167, 137, 138, 168, 137, 138, 
-	169, 137, 138, 170, 137, 138, 163, 137, 
-	138, 171, 137, 138, 172, 137, 138, 173, 
-	171, 137, 138, 174, 137, 138, 175, 137, 
-	138, 176, 137, 138, 177, 137, 138, 178, 
-	137, 138, 179, 137, 138, 180, 137, 138, 
-	181, 137, 138, 182, 137, 138, 170, 137, 
-	138, 183, 137, 138, 184, 137, 138, 185, 
-	137, 138, 186, 137, 138, 187, 137, 138, 
-	170, 137, 138, 188, 137, 138, 189, 137, 
-	138, 190, 137, 138, 171, 137, 138, 191, 
-	137, 138, 192, 137, 138, 193, 137, 138, 
-	194, 137, 138, 195, 137, 138, 196, 137, 
-	138, 197, 137, 138, 198, 163, 137, 138, 
-	199, 200, 137, 138, 201, 137, 138, 202, 
-	137, 138, 203, 137, 138, 204, 137, 138, 
-	187, 137, 138, 205, 137, 138, 206, 137, 
-	138, 207, 137, 138, 208, 137, 138, 209, 
-	137, 138, 187, 137, 138, 189, 137, 210, 
-	211, 0, 212, 0, 213, 0, 214, 0, 
-	215, 0, 216, 0, 217, 0, 218, 0, 
-	219, 0, 220, 0, 74, 0, 221, 0, 
-	222, 0, 223, 0, 224, 0, 225, 0, 
-	226, 0, 227, 0, 228, 0, 230, 229, 
-	232, 231, 232, 233, 234, 235, 236, 237, 
-	234, 233, 231, 232, 238, 231, 232, 239, 
-	231, 232, 240, 231, 232, 241, 231, 232, 
-	242, 231, 232, 243, 231, 232, 244, 231, 
-	232, 245, 231, 232, 246, 231, 232, 247, 
-	231, 232, 248, 231, 232, 249, 231, 232, 
-	250, 231, 232, 251, 231, 232, 252, 231, 
-	232, 253, 231, 232, 254, 231, 232, 255, 
-	231, 232, 243, 231, 232, 256, 231, 232, 
-	257, 231, 232, 258, 231, 232, 259, 231, 
-	232, 260, 231, 232, 243, 231, 261, 0, 
-	262, 0, 263, 0, 264, 0, 265, 0, 
-	74, 0, 266, 0, 267, 0, 268, 0, 
-	211, 0, 269, 0, 270, 0, 271, 0, 
-	272, 0, 273, 0, 274, 0, 275, 0, 
-	276, 277, 227, 0, 278, 279, 0, 280, 
-	0, 281, 0, 282, 0, 283, 0, 284, 
-	0, 285, 0, 286, 0, 288, 287, 290, 
-	289, 290, 291, 292, 293, 294, 292, 295, 
-	296, 297, 298, 299, 300, 300, 291, 289, 
-	290, 301, 289, 290, 302, 289, 290, 303, 
-	289, 290, 304, 289, 290, 305, 289, 290, 
-	306, 289, 290, 307, 289, 290, 308, 289, 
-	290, 309, 289, 290, 310, 289, 290, 311, 
-	289, 290, 312, 289, 290, 313, 289, 290, 
-	314, 289, 290, 315, 289, 290, 316, 317, 
-	289, 290, 318, 289, 290, 319, 289, 290, 
-	320, 289, 290, 321, 289, 290, 322, 289, 
-	290, 315, 289, 290, 323, 289, 290, 324, 
-	289, 290, 325, 323, 289, 290, 326, 289, 
-	290, 327, 289, 290, 328, 289, 290, 329, 
-	289, 290, 330, 289, 290, 331, 289, 290, 
-	332, 289, 290, 333, 289, 290, 334, 289, 
-	290, 322, 289, 290, 335, 289, 290, 336, 
-	289, 290, 337, 289, 290, 338, 289, 290, 
-	339, 289, 290, 322, 289, 290, 340, 289, 
-	290, 341, 289, 290, 342, 289, 290, 323, 
-	289, 290, 343, 289, 290, 344, 289, 290, 
-	345, 289, 290, 346, 289, 290, 347, 289, 
-	290, 348, 289, 290, 322, 289, 290, 341, 
-	289, 349, 0, 350, 0, 351, 0, 352, 
-	0, 353, 0, 284, 0, 355, 354, 357, 
-	356, 357, 358, 359, 360, 361, 359, 362, 
-	363, 364, 365, 366, 367, 367, 358, 356, 
-	357, 368, 356, 357, 369, 356, 357, 370, 
-	356, 357, 371, 356, 357, 372, 356, 357, 
-	373, 356, 357, 374, 356, 357, 375, 356, 
-	357, 376, 356, 357, 377, 356, 357, 378, 
-	356, 357, 379, 356, 357, 380, 356, 357, 
-	381, 356, 357, 382, 356, 357, 383, 384, 
-	356, 357, 385, 356, 357, 386, 356, 357, 
-	387, 356, 357, 388, 356, 357, 389, 356, 
-	357, 382, 356, 357, 390, 356, 357, 391, 
-	392, 356, 357, 393, 356, 357, 394, 356, 
-	357, 395, 356, 357, 396, 356, 357, 397, 
-	356, 357, 398, 356, 357, 399, 356, 357, 
-	389, 356, 357, 400, 390, 356, 357, 401, 
-	356, 357, 402, 356, 357, 403, 356, 357, 
-	404, 356, 357, 405, 356, 357, 406, 356, 
-	357, 407, 356, 357, 408, 356, 357, 399, 
-	356, 357, 409, 356, 357, 410, 356, 357, 
-	411, 356, 357, 412, 356, 357, 413, 356, 
-	357, 389, 356, 357, 414, 356, 357, 415, 
-	356, 357, 416, 356, 357, 390, 356, 357, 
-	417, 356, 357, 418, 356, 357, 419, 356, 
-	357, 420, 356, 357, 421, 356, 357, 422, 
-	356, 357, 423, 356, 357, 424, 382, 356, 
-	357, 425, 426, 356, 357, 427, 356, 357, 
-	428, 356, 357, 429, 356, 357, 430, 356, 
-	357, 413, 356, 357, 431, 356, 357, 432, 
-	356, 357, 433, 356, 357, 434, 356, 357, 
-	435, 356, 357, 413, 356, 357, 415, 356, 
-	267, 0, 436, 437, 436, 0, 440, 439, 
-	441, 442, 439, 438, 0, 444, 445, 443, 
-	0, 444, 443, 440, 446, 444, 445, 446, 
-	443, 440, 447, 448, 449, 450, 451, 452, 
-	453, 454, 455, 456, 457, 458, 459, 459, 
-	460, 447, 0, 79, 461, 462, 78, 79, 
-	463, 78, 79, 464, 78, 79, 465, 78, 
-	79, 466, 78, 79, 467, 78, 79, 468, 
-	78, 79, 469, 78, 79, 107, 78, 79, 
-	470, 78, 79, 471, 78, 79, 472, 78, 
-	79, 473, 78, 79, 474, 78, 79, 475, 
-	78, 79, 476, 78, 79, 477, 78, 79, 
-	478, 78, 79, 469, 78, 79, 479, 78, 
-	79, 480, 78, 79, 481, 78, 79, 482, 
-	78, 79, 483, 78, 79, 484, 78, 79, 
-	107, 78, 79, 485, 78, 79, 486, 78, 
-	79, 487, 78, 79, 488, 78, 79, 489, 
-	78, 79, 107, 78, 79, 490, 78, 79, 
-	491, 78, 79, 492, 78, 79, 493, 78, 
-	79, 494, 78, 79, 495, 78, 79, 496, 
-	78, 79, 497, 108, 107, 78, 79, 498, 
-	499, 78, 79, 500, 78, 79, 501, 78, 
-	79, 502, 78, 79, 503, 78, 79, 489, 
-	78, 79, 504, 78, 79, 505, 78, 79, 
-	506, 78, 79, 507, 78, 79, 508, 78, 
-	79, 489, 78, 211, 0, 509, 0, 1, 
-	0, 510, 0
-];
-
-var _lexer_trans_targs = [
-	0, 2, 2, 3, 13, 15, 29, 32, 
-	35, 67, 157, 193, 199, 203, 357, 358, 
-	417, 4, 5, 6, 7, 6, 6, 7, 
-	6, 8, 8, 8, 9, 8, 8, 8, 
-	9, 10, 11, 12, 2, 12, 13, 2, 
-	14, 16, 17, 18, 19, 20, 21, 22, 
-	23, 24, 25, 26, 27, 28, 419, 30, 
-	31, 2, 14, 31, 2, 14, 33, 34, 
-	2, 33, 32, 34, 36, 416, 37, 38, 
-	39, 40, 41, 42, 43, 44, 43, 44, 
-	44, 2, 45, 59, 364, 383, 390, 396, 
-	46, 47, 48, 49, 50, 51, 52, 53, 
-	54, 55, 56, 57, 58, 2, 60, 61, 
-	62, 63, 64, 65, 66, 2, 2, 3, 
-	13, 15, 29, 32, 35, 67, 157, 193, 
-	199, 203, 357, 358, 68, 146, 69, 70, 
-	71, 72, 73, 74, 75, 76, 77, 78, 
-	79, 78, 79, 79, 2, 80, 94, 95, 
-	103, 115, 121, 125, 145, 81, 82, 83, 
-	84, 85, 86, 87, 88, 89, 90, 91, 
-	92, 93, 2, 66, 96, 102, 97, 98, 
-	99, 100, 101, 94, 104, 105, 106, 107, 
-	108, 109, 110, 111, 112, 113, 114, 116, 
-	117, 118, 119, 120, 122, 123, 124, 126, 
-	127, 128, 129, 130, 131, 132, 133, 134, 
-	139, 135, 136, 137, 138, 140, 141, 142, 
-	143, 144, 147, 29, 148, 149, 150, 151, 
-	152, 153, 154, 155, 156, 158, 159, 160, 
-	161, 162, 163, 164, 165, 166, 167, 166, 
-	167, 167, 2, 168, 175, 187, 169, 170, 
-	171, 172, 173, 174, 66, 176, 177, 178, 
-	179, 180, 181, 182, 183, 184, 185, 186, 
-	188, 189, 190, 191, 192, 194, 195, 196, 
-	197, 198, 200, 201, 202, 204, 205, 206, 
-	207, 208, 209, 210, 211, 281, 212, 275, 
-	213, 214, 215, 216, 217, 218, 219, 220, 
-	221, 220, 221, 221, 2, 222, 236, 237, 
-	245, 257, 263, 267, 274, 223, 224, 225, 
-	226, 227, 228, 229, 230, 231, 232, 233, 
-	234, 235, 2, 66, 238, 244, 239, 240, 
-	241, 242, 243, 236, 246, 247, 248, 249, 
-	250, 251, 252, 253, 254, 255, 256, 258, 
-	259, 260, 261, 262, 264, 265, 266, 268, 
-	269, 270, 271, 272, 273, 276, 277, 278, 
-	279, 280, 282, 283, 282, 283, 283, 2, 
-	284, 298, 299, 307, 326, 332, 336, 356, 
-	285, 286, 287, 288, 289, 290, 291, 292, 
-	293, 294, 295, 296, 297, 2, 66, 300, 
-	306, 301, 302, 303, 304, 305, 298, 308, 
-	316, 309, 310, 311, 312, 313, 314, 315, 
-	317, 318, 319, 320, 321, 322, 323, 324, 
-	325, 327, 328, 329, 330, 331, 333, 334, 
-	335, 337, 338, 339, 340, 341, 342, 343, 
-	344, 345, 350, 346, 347, 348, 349, 351, 
-	352, 353, 354, 355, 358, 359, 360, 362, 
-	363, 361, 359, 360, 361, 359, 362, 363, 
-	3, 13, 15, 29, 32, 35, 67, 157, 
-	193, 199, 203, 357, 358, 365, 373, 366, 
-	367, 368, 369, 370, 371, 372, 374, 375, 
-	376, 377, 378, 379, 380, 381, 382, 384, 
-	385, 386, 387, 388, 389, 391, 392, 393, 
-	394, 395, 397, 398, 399, 400, 401, 402, 
-	403, 404, 405, 410, 406, 407, 408, 409, 
-	411, 412, 413, 414, 415, 418, 0
-];
-
-var _lexer_trans_actions = [
-	43, 0, 54, 3, 1, 0, 29, 1, 
-	29, 29, 29, 29, 29, 29, 29, 35, 
-	0, 0, 0, 7, 139, 48, 0, 102, 
-	9, 5, 45, 134, 45, 0, 33, 122, 
-	33, 33, 0, 11, 106, 0, 0, 114, 
-	25, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	57, 149, 126, 0, 110, 23, 0, 27, 
-	118, 27, 51, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 57, 144, 0, 54, 
-	0, 69, 33, 84, 84, 84, 84, 84, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 13, 0, 0, 
-	0, 0, 0, 0, 13, 31, 130, 60, 
-	57, 31, 63, 57, 63, 63, 63, 63, 
-	63, 63, 63, 66, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 57, 
-	144, 0, 54, 0, 72, 33, 84, 84, 
-	84, 84, 84, 84, 84, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 15, 15, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 57, 144, 0, 
-	54, 0, 81, 84, 84, 84, 0, 0, 
-	0, 0, 0, 0, 21, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 57, 
-	144, 0, 54, 0, 78, 33, 84, 84, 
-	84, 84, 84, 84, 84, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 19, 19, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 57, 144, 0, 54, 0, 75, 
-	33, 84, 84, 84, 84, 84, 84, 84, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 17, 17, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 37, 37, 
-	54, 37, 87, 0, 0, 39, 0, 0, 
-	93, 90, 41, 96, 90, 96, 96, 96, 
-	96, 96, 96, 96, 99, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0, 0, 
-	0, 0, 0, 0, 0, 0, 0
-];
-
-var _lexer_eof_actions = [
-	0, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43, 43, 43, 43, 43, 
-	43, 43, 43, 43
-];
-
-var lexer_start = 1;
-var lexer_first_final = 419;
-var lexer_error = 0;
-
-var lexer_en_main = 1;
-
-
-/* line 129 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-/* line 130 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-/* line 131 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-var Lexer = function(listener) {
-  // Check that listener has the required functions
-  var events = ['comment', 'tag', 'feature', 'background', 'scenario', 'scenario_outline', 'examples', 'step', 'doc_string', 'row', 'eof'];
-  for(e in events) {
-    var event = events[e];
-    if(typeof listener[event] != 'function') {
-      throw "Error. No " + event + " function exists on " + JSON.stringify(listener);
-    }
-  }
-  this.listener = listener;
-};
-
-Lexer.prototype.scan = function(data) {
-  var ending = "\n%_FEATURE_END_%";
-  if(typeof data == 'string') {
-    data = this.stringToBytes(data + ending);
-  } else if(typeof Buffer != 'undefined' && Buffer.isBuffer(data)) {
-    // Node.js
-    var buf = new Buffer(data.length + ending.length);
-    data.copy(buf, 0, 0);
-    new Buffer(ending).copy(buf, data.length, 0);
-    data = buf;
-  }
-  var eof = pe = data.length;
-  var p = 0;
-
-  this.line_number = 1;
-  this.last_newline = 0;
-
-  
-/* line 778 "js/lib/gherkin/lexer/en.js" */
-{
-	  this.cs = lexer_start;
-} /* JSCodeGen::writeInit */
-
-/* line 162 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-  
-/* line 785 "js/lib/gherkin/lexer/en.js" */
-{
-	var _klen, _trans, _keys, _ps, _widec, _acts, _nacts;
-	var _goto_level, _resume, _eof_trans, _again, _test_eof;
-	var _out;
-	_klen = _trans = _keys = _acts = _nacts = null;
-	_goto_level = 0;
-	_resume = 10;
-	_eof_trans = 15;
-	_again = 20;
-	_test_eof = 30;
-	_out = 40;
-	while (true) {
-	_trigger_goto = false;
-	if (_goto_level <= 0) {
-	if (p == pe) {
-		_goto_level = _test_eof;
-		continue;
-	}
-	if ( this.cs == 0) {
-		_goto_level = _out;
-		continue;
-	}
-	}
-	if (_goto_level <= _resume) {
-	_keys = _lexer_key_offsets[ this.cs];
-	_trans = _lexer_index_offsets[ this.cs];
-	_klen = _lexer_single_lengths[ this.cs];
-	_break_match = false;
-	
-	do {
-	  if (_klen > 0) {
-	     _lower = _keys;
-	     _upper = _keys + _klen - 1;
-
-	     while (true) {
-	        if (_upper < _lower) { break; }
-	        _mid = _lower + ( (_upper - _lower) >> 1 );
-
-	        if ( data[p] < _lexer_trans_keys[_mid]) {
-	           _upper = _mid - 1;
-	        } else if ( data[p] > _lexer_trans_keys[_mid]) {
-	           _lower = _mid + 1;
-	        } else {
-	           _trans += (_mid - _keys);
-	           _break_match = true;
-	           break;
-	        };
-	     } /* while */
-	     if (_break_match) { break; }
-	     _keys += _klen;
-	     _trans += _klen;
-	  }
-	  _klen = _lexer_range_lengths[ this.cs];
-	  if (_klen > 0) {
-	     _lower = _keys;
-	     _upper = _keys + (_klen << 1) - 2;
-	     while (true) {
-	        if (_upper < _lower) { break; }
-	        _mid = _lower + (((_upper-_lower) >> 1) & ~1);
-	        if ( data[p] < _lexer_trans_keys[_mid]) {
-	          _upper = _mid - 2;
-	         } else if ( data[p] > _lexer_trans_keys[_mid+1]) {
-	          _lower = _mid + 2;
-	        } else {
-	          _trans += ((_mid - _keys) >> 1);
-	          _break_match = true;
-	          break;
-	        }
-	     } /* while */
-	     if (_break_match) { break; }
-	     _trans += _klen
-	  }
-	} while (false);
-	_trans = _lexer_indicies[_trans];
-	 this.cs = _lexer_trans_targs[_trans];
-	if (_lexer_trans_actions[_trans] != 0) {
-		_acts = _lexer_trans_actions[_trans];
-		_nacts = _lexer_actions[_acts];
-		_acts += 1;
-		while (_nacts > 0) {
-			_nacts -= 1;
-			_acts += 1;
-			switch (_lexer_actions[_acts - 1]) {
-case 0:
-/* line 6 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.content_start = p;
-    this.current_line = this.line_number;
-    this.start_col = p - this.last_newline - (this.keyword+':').length;
-  		break;
-case 1:
-/* line 12 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.current_line = this.line_number;
-    this.start_col = p - this.last_newline;
-  		break;
-case 2:
-/* line 17 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.content_start = p;
-  		break;
-case 3:
-/* line 21 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.docstring_content_type_start = p;
-  		break;
-case 4:
-/* line 25 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.docstring_content_type_end = p;
-  		break;
-case 5:
-/* line 29 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    var con = this.unindent(
-      this.start_col, 
-      this.bytesToString(data.slice(this.content_start, this.next_keyword_start-1)).replace(/(\r?\n)?([\t ])*$/, '').replace(/\\\"\\\"\\\"/mg, '"""')
-    );
-    var con_type = this.bytesToString(data.slice(this.docstring_content_type_start, this.docstring_content_type_end)).trim();
-    this.listener.doc_string(con_type, con, this.current_line); 
-  		break;
-case 6:
-/* line 38 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    p = this.store_keyword_content('feature', data, p, eof);
-  		break;
-case 7:
-/* line 42 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    p = this.store_keyword_content('background', data, p, eof);
-  		break;
-case 8:
-/* line 46 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    p = this.store_keyword_content('scenario', data, p, eof);
-  		break;
-case 9:
-/* line 50 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    p = this.store_keyword_content('scenario_outline', data, p, eof);
-  		break;
-case 10:
-/* line 54 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    p = this.store_keyword_content('examples', data, p, eof);
-  		break;
-case 11:
-/* line 58 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    var con = this.bytesToString(data.slice(this.content_start, p)).trim();
-    this.listener.step(this.keyword, con, this.current_line);
-  		break;
-case 12:
-/* line 63 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    var con = this.bytesToString(data.slice(this.content_start, p)).trim();
-    this.listener.comment(con, this.line_number);
-    this.keyword_start = null;
-  		break;
-case 13:
-/* line 69 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    var con = this.bytesToString(data.slice(this.content_start, p)).trim();
-    this.listener.tag(con, this.line_number);
-    this.keyword_start = null;
-  		break;
-case 14:
-/* line 75 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.line_number++;
-  		break;
-case 15:
-/* line 79 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.last_newline = p + 1;
-  		break;
-case 16:
-/* line 83 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.keyword_start = this.keyword_start || p;
-  		break;
-case 17:
-/* line 87 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.keyword = this.bytesToString(data.slice(this.keyword_start, p)).replace(/:$/, '');
-    this.keyword_start = null;
-  		break;
-case 18:
-/* line 92 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.next_keyword_start = p;
-  		break;
-case 19:
-/* line 96 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    p = p - 1;
-    current_row = [];
-    this.current_line = this.line_number;
-  		break;
-case 20:
-/* line 102 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.content_start = p;
-  		break;
-case 21:
-/* line 106 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    var con = this.bytesToString(data.slice(this.content_start, p)).trim();
-    current_row.push(con.replace(/\\\|/, "|").replace(/\\n/, "\n").replace(/\\\\/, "\\"));
-  		break;
-case 22:
-/* line 111 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    this.listener.row(current_row, this.current_line);
-  		break;
-case 23:
-/* line 115 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    if(this.cs < lexer_first_final) {
-      var content = this.current_line_content(data, p);
-      throw "Lexing error on line " + this.line_number + ": '" + content + "'. See http://wiki.github.com/cucumber/gherkin/lexingerror for more information.";
-    } else {
-      this.listener.eof();
-    }
-    
-  		break;
-/* line 1012 "js/lib/gherkin/lexer/en.js" */
-			} /* action switch */
-		}
-	}
-	if (_trigger_goto) {
-		continue;
-	}
-	}
-	if (_goto_level <= _again) {
-	if ( this.cs == 0) {
-		_goto_level = _out;
-		continue;
-	}
-	p += 1;
-	if (p != pe) {
-		_goto_level = _resume;
-		continue;
-	}
-	}
-	if (_goto_level <= _test_eof) {
-	if (p == eof) {
-	__acts = _lexer_eof_actions[ this.cs];
-	__nacts =  _lexer_actions[__acts];
-	__acts += 1;
-	while (__nacts > 0) {
-		__nacts -= 1;
-		__acts += 1;
-		switch (_lexer_actions[__acts - 1]) {
-case 23:
-/* line 115 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-
-    if(this.cs < lexer_first_final) {
-      var content = this.current_line_content(data, p);
-      throw "Lexing error on line " + this.line_number + ": '" + content + "'. See http://wiki.github.com/cucumber/gherkin/lexingerror for more information.";
-    } else {
-      this.listener.eof();
-    }
-    
-  		break;
-/* line 1051 "js/lib/gherkin/lexer/en.js" */
-		} /* eof action switch */
-	}
-	if (_trigger_goto) {
-		continue;
-	}
-}
-	}
-	if (_goto_level <= _out) {
-		break;
-	}
-	}
-	}
-
-/* line 163 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
-};
-
-Lexer.prototype.bytesToString = function(bytes) {
-  if(typeof bytes.write == 'function') {
-    // Node.js
-    return bytes.toString('utf-8');
-  } else {
-    var result = "";
-    for(var b in bytes) {
-      result += String.fromCharCode(bytes[b]);
-    }
-    return result;
-  }
-};
-
-Lexer.prototype.stringToBytes = function(string) {
-  var bytes = [];
-  for(var i = 0; i < string.length; i++) {
-    bytes[i] = string.charCodeAt(i);
-  }
-  return bytes;
-};
-
-Lexer.prototype.unindent = function(startcol, text) {
-  startcol = startcol || 0;
-  return text.replace(new RegExp('^[\t ]{0,' + startcol + '}', 'gm'), ''); 
-};
-
-Lexer.prototype.store_keyword_content = function(event, data, p, eof) {
-  var end_point = (!this.next_keyword_start || (p == eof)) ? p : this.next_keyword_start;
-  var content = this.unindent(this.start_col + 2, this.bytesToString(data.slice(this.content_start, end_point))).replace(/\s+$/,"");
-  var content_lines = content.split("\n")
-  var name = content_lines.shift() || "";
-  name = name.trim();
-  var description = content_lines.join("\n");
-  this.listener[event](this.keyword, name, description, this.current_line);
-  var nks = this.next_keyword_start;
-  this.next_keyword_start = null;
-  return nks ? nks - 1 : p;
-};
-
-Lexer.prototype.current_line_content = function(data, p) {
-  var rest = data.slice(this.last_newline, -1);
-  var end = rest.indexOf(10) || -1;
-  return this.bytesToString(rest.slice(0, end)).trim();
-};
-
-// Node.js export
-if(typeof module !== 'undefined') {
-  module.exports = Lexer;
-}
-// Require.js export
-if (typeof define !== 'undefined') {
-  if(define.amd) {
-    define('gherkin/lexer/en', [], function() {
-      return Lexer;
-    });
-  } else {
-    define('gherkin/lexer/en', function(require, exports, module) {
-      exports.Lexer = Lexer;
-    });
-  }
-}
-
-})();
 
 });
 
@@ -3254,7 +2371,6 @@ module.exports               = Runtime;
 require.define("/cucumber/runtime/ast_tree_walker",function(require,module,exports,__dirname,__filename,process){var AstTreeWalker = function(features, supportCodeLibrary, listeners) {
   var Cucumber = require('../../cucumber');
 
-  var listeners;
   var world;
   var allFeaturesSucceded = true;
   var skippingSteps       = false;
@@ -3296,8 +2412,9 @@ require.define("/cucumber/runtime/ast_tree_walker",function(require,module,expor
       supportCodeLibrary.instantiateNewWorld(function(world) {
         self.setWorld(world);
         self.witnessNewScenario();
-        var payload = { scenario: scenario };
-        var event   = AstTreeWalker.Event(AstTreeWalker.SCENARIO_EVENT_NAME, payload);
+        var payload = {};
+        payload[scenario.payloadType] = scenario;
+        var event = AstTreeWalker.Event(AstTreeWalker[scenario.payloadType.toUpperCase() + '_EVENT_NAME'], payload);
         var hookedUpScenarioVisit = supportCodeLibrary.hookUpFunction(
           function(callback) { scenario.acceptVisitor(self, callback); },
           scenario,
@@ -3309,6 +2426,19 @@ require.define("/cucumber/runtime/ast_tree_walker",function(require,module,expor
           callback
         );
       });
+    },
+
+    visitRow: function visitRow(row, scenario,callback){
+      var payload = {exampleRow:row};
+      var event = AstTreeWalker.Event(AstTreeWalker.ROW_EVENT_NAME, payload);
+      self.witnessNewScenario();
+      self.broadcastEventAroundUserFunction(
+        event,
+        function(callback){
+          scenario.visitRowSteps(self, row, callback);
+        },
+        callback
+      );
     },
 
     visitStep: function visitStep(step, callback) {
@@ -3360,10 +2490,19 @@ require.define("/cucumber/runtime/ast_tree_walker",function(require,module,expor
     },
 
     broadcastEvent: function broadcastEvent(event, callback) {
-      listeners.forEach(
-        function(listener, callback) { listener.hear(event, callback); },
-        callback
-      );
+      broadcastToListeners(listeners, onRuntimeListenersComplete);
+
+      function onRuntimeListenersComplete() {
+        var listeners = supportCodeLibrary.getListeners();
+        broadcastToListeners(listeners, callback);
+      }
+
+      function broadcastToListeners(listeners, callback) {
+        listeners.forEach(
+          function(listener, callback) { listener.hear(event, callback); },
+          callback
+        );
+      }
     },
 
     lookupStepDefinitionByName: function lookupStepDefinitionByName(stepName) {
@@ -3443,8 +2582,10 @@ AstTreeWalker.FEATURES_EVENT_NAME                 = 'Features';
 AstTreeWalker.FEATURE_EVENT_NAME                  = 'Feature';
 AstTreeWalker.BACKGROUND_EVENT_NAME               = 'Background';
 AstTreeWalker.SCENARIO_EVENT_NAME                 = 'Scenario';
+AstTreeWalker.SCENARIO_OUTLINE_EVENT_NAME         = 'ScenarioOutline';
 AstTreeWalker.STEP_EVENT_NAME                     = 'Step';
 AstTreeWalker.STEP_RESULT_EVENT_NAME              = 'StepResult';
+AstTreeWalker.ROW_EVENT_NAME                      = 'ExampleRow';
 AstTreeWalker.BEFORE_EVENT_NAME_PREFIX            = 'Before';
 AstTreeWalker.AFTER_EVENT_NAME_PREFIX             = 'After';
 AstTreeWalker.NON_EVENT_LEADING_PARAMETERS_COUNT  = 0;
@@ -3510,6 +2651,10 @@ require.define("/cucumber/runtime/step_result",function(require,module,exports,_
 
     getStep: function getStep() {
       return payload.step;
+    },
+
+    getDuration: function getDuration() {
+      return payload.duration;
     }
   };
 
@@ -3588,14 +2733,14 @@ module.exports = UndefinedStepResult;
 
 });
 
-require.define("/cucumber/support_code",function(require,module,exports,__dirname,__filename,process){var SupportCode                          = {};
-SupportCode.Hook                         = require('./support_code/hook');
-SupportCode.Library                      = require('./support_code/library');
-SupportCode.StepDefinition               = require('./support_code/step_definition');
-SupportCode.StepDefinitionSnippetBuilder = require('./support_code/step_definition_snippet_builder');
-SupportCode.WorldConstructor             = require('./support_code/world_constructor');
-module.exports                           = SupportCode;
-
+require.define("/cucumber/support_code",function(require,module,exports,__dirname,__filename,process){var SupportCode                                = {};
+SupportCode.Hook                               = require('./support_code/hook');
+SupportCode.Library                            = require('./support_code/library');
+SupportCode.StepDefinition                     = require('./support_code/step_definition');
+SupportCode.StepDefinitionSnippetBuilder       = require('./support_code/step_definition_snippet_builder');
+SupportCode.StepDefinitionSnippetBuilderSyntax = require('./support_code/step_definition_snippet_builder_syntax');
+SupportCode.WorldConstructor                   = require('./support_code/world_constructor');
+module.exports                                 = SupportCode;
 });
 
 require.define("/cucumber/support_code/hook",function(require,module,exports,__dirname,__filename,process){var _ = require('underscore');
@@ -3608,7 +2753,10 @@ var Hook = function(code, options) {
   var self = {
     invokeBesideScenario: function invokeBesideScenario(scenario, world, callback) {
       if (self.appliesToScenario(scenario))
-        code.call(world, callback);
+        if (code.length === 1)
+          code.call(world, callback);
+        else
+          code.call(world, scenario, callback);
       else
         callback(function(endPostScenarioAroundHook) { endPostScenarioAroundHook(); });
     },
@@ -3637,20 +2785,17 @@ module.exports = Hook;
 require.define("/node_modules/underscore/package.json",function(require,module,exports,__dirname,__filename,process){module.exports = {"main":"underscore.js"}
 });
 
-require.define("/node_modules/underscore/underscore.js",function(require,module,exports,__dirname,__filename,process){//     Underscore.js 1.3.3
-//     (c) 2009-2012 Jeremy Ashkenas, DocumentCloud Inc.
-//     Underscore is freely distributable under the MIT license.
-//     Portions of Underscore are inspired or borrowed from Prototype,
-//     Oliver Steele's Functional, and John Resig's Micro-Templating.
-//     For all details and documentation:
-//     http://documentcloud.github.com/underscore
+require.define("/node_modules/underscore/underscore.js",function(require,module,exports,__dirname,__filename,process){//     Underscore.js 1.5.2
+//     http://underscorejs.org
+//     (c) 2009-2013 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+//     Underscore may be freely distributed under the MIT license.
 
 (function() {
 
   // Baseline setup
   // --------------
 
-  // Establish the root object, `window` in the browser, or `global` on the server.
+  // Establish the root object, `window` in the browser, or `exports` on the server.
   var root = this;
 
   // Save the previous value of the `_` variable.
@@ -3663,10 +2808,12 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   var ArrayProto = Array.prototype, ObjProto = Object.prototype, FuncProto = Function.prototype;
 
   // Create quick reference variables for speed access to core prototypes.
-  var slice            = ArrayProto.slice,
-      unshift          = ArrayProto.unshift,
-      toString         = ObjProto.toString,
-      hasOwnProperty   = ObjProto.hasOwnProperty;
+  var
+    push             = ArrayProto.push,
+    slice            = ArrayProto.slice,
+    concat           = ArrayProto.concat,
+    toString         = ObjProto.toString,
+    hasOwnProperty   = ObjProto.hasOwnProperty;
 
   // All **ECMAScript 5** native function implementations that we hope to use
   // are declared here.
@@ -3685,7 +2832,11 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     nativeBind         = FuncProto.bind;
 
   // Create a safe reference to the Underscore object for use below.
-  var _ = function(obj) { return new wrapper(obj); };
+  var _ = function(obj) {
+    if (obj instanceof _) return obj;
+    if (!(this instanceof _)) return new _(obj);
+    this._wrapped = obj;
+  };
 
   // Export the Underscore object for **Node.js**, with
   // backwards-compatibility for the old `require()` API. If we're in
@@ -3697,11 +2848,11 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     }
     exports._ = _;
   } else {
-    root['_'] = _;
+    root._ = _;
   }
 
   // Current version.
-  _.VERSION = '1.3.3';
+  _.VERSION = '1.5.2';
 
   // Collection Functions
   // --------------------
@@ -3714,14 +2865,13 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     if (nativeForEach && obj.forEach === nativeForEach) {
       obj.forEach(iterator, context);
     } else if (obj.length === +obj.length) {
-      for (var i = 0, l = obj.length; i < l; i++) {
-        if (i in obj && iterator.call(context, obj[i], i, obj) === breaker) return;
+      for (var i = 0, length = obj.length; i < length; i++) {
+        if (iterator.call(context, obj[i], i, obj) === breaker) return;
       }
     } else {
-      for (var key in obj) {
-        if (_.has(obj, key)) {
-          if (iterator.call(context, obj[key], key, obj) === breaker) return;
-        }
+      var keys = _.keys(obj);
+      for (var i = 0, length = keys.length; i < length; i++) {
+        if (iterator.call(context, obj[keys[i]], keys[i], obj) === breaker) return;
       }
     }
   };
@@ -3733,11 +2883,12 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     if (obj == null) return results;
     if (nativeMap && obj.map === nativeMap) return obj.map(iterator, context);
     each(obj, function(value, index, list) {
-      results[results.length] = iterator.call(context, value, index, list);
+      results.push(iterator.call(context, value, index, list));
     });
-    if (obj.length === +obj.length) results.length = obj.length;
     return results;
   };
+
+  var reduceError = 'Reduce of empty array with no initial value';
 
   // **Reduce** builds up a single result from a list of values, aka `inject`,
   // or `foldl`. Delegates to **ECMAScript 5**'s native `reduce` if available.
@@ -3756,7 +2907,7 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
         memo = iterator.call(context, memo, value, index, list);
       }
     });
-    if (!initial) throw new TypeError('Reduce of empty array with no initial value');
+    if (!initial) throw new TypeError(reduceError);
     return memo;
   };
 
@@ -3769,9 +2920,22 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
       if (context) iterator = _.bind(iterator, context);
       return initial ? obj.reduceRight(iterator, memo) : obj.reduceRight(iterator);
     }
-    var reversed = _.toArray(obj).reverse();
-    if (context && !initial) iterator = _.bind(iterator, context);
-    return initial ? _.reduce(reversed, iterator, memo, context) : _.reduce(reversed, iterator);
+    var length = obj.length;
+    if (length !== +length) {
+      var keys = _.keys(obj);
+      length = keys.length;
+    }
+    each(obj, function(value, index, list) {
+      index = keys ? keys[--length] : --length;
+      if (!initial) {
+        memo = obj[index];
+        initial = true;
+      } else {
+        memo = iterator.call(context, memo, obj[index], index, list);
+      }
+    });
+    if (!initial) throw new TypeError(reduceError);
+    return memo;
   };
 
   // Return the first value which passes a truth test. Aliased as `detect`.
@@ -3794,25 +2958,23 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     if (obj == null) return results;
     if (nativeFilter && obj.filter === nativeFilter) return obj.filter(iterator, context);
     each(obj, function(value, index, list) {
-      if (iterator.call(context, value, index, list)) results[results.length] = value;
+      if (iterator.call(context, value, index, list)) results.push(value);
     });
     return results;
   };
 
   // Return all the elements for which a truth test fails.
   _.reject = function(obj, iterator, context) {
-    var results = [];
-    if (obj == null) return results;
-    each(obj, function(value, index, list) {
-      if (!iterator.call(context, value, index, list)) results[results.length] = value;
-    });
-    return results;
+    return _.filter(obj, function(value, index, list) {
+      return !iterator.call(context, value, index, list);
+    }, context);
   };
 
   // Determine whether all of the elements match a truth test.
   // Delegates to **ECMAScript 5**'s native `every` if available.
   // Aliased as `all`.
   _.every = _.all = function(obj, iterator, context) {
+    iterator || (iterator = _.identity);
     var result = true;
     if (obj == null) return result;
     if (nativeEvery && obj.every === nativeEvery) return obj.every(iterator, context);
@@ -3836,23 +2998,22 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     return !!result;
   };
 
-  // Determine if a given value is included in the array or object using `===`.
-  // Aliased as `contains`.
-  _.include = _.contains = function(obj, target) {
-    var found = false;
-    if (obj == null) return found;
+  // Determine if the array or object contains a given value (using `===`).
+  // Aliased as `include`.
+  _.contains = _.include = function(obj, target) {
+    if (obj == null) return false;
     if (nativeIndexOf && obj.indexOf === nativeIndexOf) return obj.indexOf(target) != -1;
-    found = any(obj, function(value) {
+    return any(obj, function(value) {
       return value === target;
     });
-    return found;
   };
 
   // Invoke a method (with arguments) on every item in a collection.
   _.invoke = function(obj, method) {
     var args = slice.call(arguments, 2);
+    var isFunc = _.isFunction(method);
     return _.map(obj, function(value) {
-      return (_.isFunction(method) ? method || value : value[method]).apply(value, args);
+      return (isFunc ? method : value[method]).apply(value, args);
     });
   };
 
@@ -3861,23 +3022,47 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     return _.map(obj, function(value){ return value[key]; });
   };
 
+  // Convenience version of a common use case of `filter`: selecting only objects
+  // containing specific `key:value` pairs.
+  _.where = function(obj, attrs, first) {
+    if (_.isEmpty(attrs)) return first ? void 0 : [];
+    return _[first ? 'find' : 'filter'](obj, function(value) {
+      for (var key in attrs) {
+        if (attrs[key] !== value[key]) return false;
+      }
+      return true;
+    });
+  };
+
+  // Convenience version of a common use case of `find`: getting the first object
+  // containing specific `key:value` pairs.
+  _.findWhere = function(obj, attrs) {
+    return _.where(obj, attrs, true);
+  };
+
   // Return the maximum element or (element-based computation).
+  // Can't optimize arrays of integers longer than 65,535 elements.
+  // See [WebKit Bug 80797](https://bugs.webkit.org/show_bug.cgi?id=80797)
   _.max = function(obj, iterator, context) {
-    if (!iterator && _.isArray(obj) && obj[0] === +obj[0]) return Math.max.apply(Math, obj);
+    if (!iterator && _.isArray(obj) && obj[0] === +obj[0] && obj.length < 65535) {
+      return Math.max.apply(Math, obj);
+    }
     if (!iterator && _.isEmpty(obj)) return -Infinity;
-    var result = {computed : -Infinity};
+    var result = {computed : -Infinity, value: -Infinity};
     each(obj, function(value, index, list) {
       var computed = iterator ? iterator.call(context, value, index, list) : value;
-      computed >= result.computed && (result = {value : value, computed : computed});
+      computed > result.computed && (result = {value : value, computed : computed});
     });
     return result.value;
   };
 
   // Return the minimum element (or element-based computation).
   _.min = function(obj, iterator, context) {
-    if (!iterator && _.isArray(obj) && obj[0] === +obj[0]) return Math.min.apply(Math, obj);
+    if (!iterator && _.isArray(obj) && obj[0] === +obj[0] && obj.length < 65535) {
+      return Math.min.apply(Math, obj);
+    }
     if (!iterator && _.isEmpty(obj)) return Infinity;
-    var result = {computed : Infinity};
+    var result = {computed : Infinity, value: Infinity};
     each(obj, function(value, index, list) {
       var computed = iterator ? iterator.call(context, value, index, list) : value;
       computed < result.computed && (result = {value : value, computed : computed});
@@ -3885,69 +3070,112 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     return result.value;
   };
 
-  // Shuffle an array.
+  // Shuffle an array, using the modern version of the 
+  // [Fisher-Yates shuffle](http://en.wikipedia.org/wiki/Fisherâ€“Yates_shuffle).
   _.shuffle = function(obj) {
-    var shuffled = [], rand;
-    each(obj, function(value, index, list) {
-      rand = Math.floor(Math.random() * (index + 1));
-      shuffled[index] = shuffled[rand];
+    var rand;
+    var index = 0;
+    var shuffled = [];
+    each(obj, function(value) {
+      rand = _.random(index++);
+      shuffled[index - 1] = shuffled[rand];
       shuffled[rand] = value;
     });
     return shuffled;
   };
 
+  // Sample **n** random values from an array.
+  // If **n** is not specified, returns a single random element from the array.
+  // The internal `guard` argument allows it to work with `map`.
+  _.sample = function(obj, n, guard) {
+    if (arguments.length < 2 || guard) {
+      return obj[_.random(obj.length - 1)];
+    }
+    return _.shuffle(obj).slice(0, Math.max(0, n));
+  };
+
+  // An internal function to generate lookup iterators.
+  var lookupIterator = function(value) {
+    return _.isFunction(value) ? value : function(obj){ return obj[value]; };
+  };
+
   // Sort the object's values by a criterion produced by an iterator.
-  _.sortBy = function(obj, val, context) {
-    var iterator = _.isFunction(val) ? val : function(obj) { return obj[val]; };
+  _.sortBy = function(obj, value, context) {
+    var iterator = lookupIterator(value);
     return _.pluck(_.map(obj, function(value, index, list) {
       return {
-        value : value,
-        criteria : iterator.call(context, value, index, list)
+        value: value,
+        index: index,
+        criteria: iterator.call(context, value, index, list)
       };
     }).sort(function(left, right) {
-      var a = left.criteria, b = right.criteria;
-      if (a === void 0) return 1;
-      if (b === void 0) return -1;
-      return a < b ? -1 : a > b ? 1 : 0;
+      var a = left.criteria;
+      var b = right.criteria;
+      if (a !== b) {
+        if (a > b || a === void 0) return 1;
+        if (a < b || b === void 0) return -1;
+      }
+      return left.index - right.index;
     }), 'value');
+  };
+
+  // An internal function used for aggregate "group by" operations.
+  var group = function(behavior) {
+    return function(obj, value, context) {
+      var result = {};
+      var iterator = value == null ? _.identity : lookupIterator(value);
+      each(obj, function(value, index) {
+        var key = iterator.call(context, value, index, obj);
+        behavior(result, key, value);
+      });
+      return result;
+    };
   };
 
   // Groups the object's values by a criterion. Pass either a string attribute
   // to group by, or a function that returns the criterion.
-  _.groupBy = function(obj, val) {
-    var result = {};
-    var iterator = _.isFunction(val) ? val : function(obj) { return obj[val]; };
-    each(obj, function(value, index) {
-      var key = iterator(value, index);
-      (result[key] || (result[key] = [])).push(value);
-    });
-    return result;
-  };
+  _.groupBy = group(function(result, key, value) {
+    (_.has(result, key) ? result[key] : (result[key] = [])).push(value);
+  });
 
-  // Use a comparator function to figure out at what index an object should
-  // be inserted so as to maintain order. Uses binary search.
-  _.sortedIndex = function(array, obj, iterator) {
-    iterator || (iterator = _.identity);
+  // Indexes the object's values by a criterion, similar to `groupBy`, but for
+  // when you know that your index values will be unique.
+  _.indexBy = group(function(result, key, value) {
+    result[key] = value;
+  });
+
+  // Counts instances of an object that group by a certain criterion. Pass
+  // either a string attribute to count by, or a function that returns the
+  // criterion.
+  _.countBy = group(function(result, key) {
+    _.has(result, key) ? result[key]++ : result[key] = 1;
+  });
+
+  // Use a comparator function to figure out the smallest index at which
+  // an object should be inserted so as to maintain order. Uses binary search.
+  _.sortedIndex = function(array, obj, iterator, context) {
+    iterator = iterator == null ? _.identity : lookupIterator(iterator);
+    var value = iterator.call(context, obj);
     var low = 0, high = array.length;
     while (low < high) {
-      var mid = (low + high) >> 1;
-      iterator(array[mid]) < iterator(obj) ? low = mid + 1 : high = mid;
+      var mid = (low + high) >>> 1;
+      iterator.call(context, array[mid]) < value ? low = mid + 1 : high = mid;
     }
     return low;
   };
 
-  // Safely convert anything iterable into a real, live array.
+  // Safely create a real, live array from anything iterable.
   _.toArray = function(obj) {
-    if (!obj)                                     return [];
-    if (_.isArray(obj))                           return slice.call(obj);
-    if (_.isArguments(obj))                       return slice.call(obj);
-    if (obj.toArray && _.isFunction(obj.toArray)) return obj.toArray();
+    if (!obj) return [];
+    if (_.isArray(obj)) return slice.call(obj);
+    if (obj.length === +obj.length) return _.map(obj, _.identity);
     return _.values(obj);
   };
 
   // Return the number of elements in an object.
   _.size = function(obj) {
-    return _.isArray(obj) ? obj.length : _.keys(obj).length;
+    if (obj == null) return 0;
+    return (obj.length === +obj.length) ? obj.length : _.keys(obj).length;
   };
 
   // Array Functions
@@ -3957,10 +3185,11 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // values in the array. Aliased as `head` and `take`. The **guard** check
   // allows it to work with `_.map`.
   _.first = _.head = _.take = function(array, n, guard) {
-    return (n != null) && !guard ? slice.call(array, 0, n) : array[0];
+    if (array == null) return void 0;
+    return (n == null) || guard ? array[0] : slice.call(array, 0, n);
   };
 
-  // Returns everything but the last entry of the array. Especcialy useful on
+  // Returns everything but the last entry of the array. Especially useful on
   // the arguments object. Passing **n** will return all the values in
   // the array, excluding the last N. The **guard** check allows it to work with
   // `_.map`.
@@ -3971,33 +3200,45 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // Get the last element of an array. Passing **n** will return the last N
   // values in the array. The **guard** check allows it to work with `_.map`.
   _.last = function(array, n, guard) {
-    if ((n != null) && !guard) {
-      return slice.call(array, Math.max(array.length - n, 0));
-    } else {
+    if (array == null) return void 0;
+    if ((n == null) || guard) {
       return array[array.length - 1];
+    } else {
+      return slice.call(array, Math.max(array.length - n, 0));
     }
   };
 
-  // Returns everything but the first entry of the array. Aliased as `tail`.
-  // Especially useful on the arguments object. Passing an **index** will return
-  // the rest of the values in the array from that index onward. The **guard**
+  // Returns everything but the first entry of the array. Aliased as `tail` and `drop`.
+  // Especially useful on the arguments object. Passing an **n** will return
+  // the rest N values in the array. The **guard**
   // check allows it to work with `_.map`.
-  _.rest = _.tail = function(array, index, guard) {
-    return slice.call(array, (index == null) || guard ? 1 : index);
+  _.rest = _.tail = _.drop = function(array, n, guard) {
+    return slice.call(array, (n == null) || guard ? 1 : n);
   };
 
   // Trim out all falsy values from an array.
   _.compact = function(array) {
-    return _.filter(array, function(value){ return !!value; });
+    return _.filter(array, _.identity);
   };
 
-  // Return a completely flattened version of an array.
+  // Internal implementation of a recursive `flatten` function.
+  var flatten = function(input, shallow, output) {
+    if (shallow && _.every(input, _.isArray)) {
+      return concat.apply(output, input);
+    }
+    each(input, function(value) {
+      if (_.isArray(value) || _.isArguments(value)) {
+        shallow ? push.apply(output, value) : flatten(value, shallow, output);
+      } else {
+        output.push(value);
+      }
+    });
+    return output;
+  };
+
+  // Flatten out an array, either recursively (by default), or just one level.
   _.flatten = function(array, shallow) {
-    return _.reduce(array, function(memo, value) {
-      if (_.isArray(value)) return memo.concat(shallow ? value : _.flatten(value));
-      memo[memo.length] = value;
-      return memo;
-    }, []);
+    return flatten(array, shallow, []);
   };
 
   // Return a version of the array that does not contain the specified value(s).
@@ -4008,18 +3249,21 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // Produce a duplicate-free version of the array. If the array has already
   // been sorted, you have the option of using a faster algorithm.
   // Aliased as `unique`.
-  _.uniq = _.unique = function(array, isSorted, iterator) {
-    var initial = iterator ? _.map(array, iterator) : array;
+  _.uniq = _.unique = function(array, isSorted, iterator, context) {
+    if (_.isFunction(isSorted)) {
+      context = iterator;
+      iterator = isSorted;
+      isSorted = false;
+    }
+    var initial = iterator ? _.map(array, iterator, context) : array;
     var results = [];
-    // The `isSorted` flag is irrelevant if the array only contains two elements.
-    if (array.length < 3) isSorted = true;
-    _.reduce(initial, function (memo, value, index) {
-      if (isSorted ? _.last(memo) !== value || !memo.length : !_.include(memo, value)) {
-        memo.push(value);
+    var seen = [];
+    each(initial, function(value, index) {
+      if (isSorted ? (!index || seen[seen.length - 1] !== value) : !_.contains(seen, value)) {
+        seen.push(value);
         results.push(array[index]);
       }
-      return memo;
-    }, []);
+    });
     return results;
   };
 
@@ -4030,8 +3274,8 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   };
 
   // Produce an array that contains every item shared between all the
-  // passed-in arrays. (Aliased as "intersect" for back-compat.)
-  _.intersection = _.intersect = function(array) {
+  // passed-in arrays.
+  _.intersection = function(array) {
     var rest = slice.call(arguments, 1);
     return _.filter(_.uniq(array), function(item) {
       return _.every(rest, function(other) {
@@ -4043,18 +3287,35 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // Take the difference between one array and a number of other arrays.
   // Only the elements present in just the first array will remain.
   _.difference = function(array) {
-    var rest = _.flatten(slice.call(arguments, 1), true);
-    return _.filter(array, function(value){ return !_.include(rest, value); });
+    var rest = concat.apply(ArrayProto, slice.call(arguments, 1));
+    return _.filter(array, function(value){ return !_.contains(rest, value); });
   };
 
   // Zip together multiple lists into a single array -- elements that share
   // an index go together.
   _.zip = function() {
-    var args = slice.call(arguments);
-    var length = _.max(_.pluck(args, 'length'));
+    var length = _.max(_.pluck(arguments, "length").concat(0));
     var results = new Array(length);
-    for (var i = 0; i < length; i++) results[i] = _.pluck(args, "" + i);
+    for (var i = 0; i < length; i++) {
+      results[i] = _.pluck(arguments, '' + i);
+    }
     return results;
+  };
+
+  // Converts lists into objects. Pass either a single array of `[key, value]`
+  // pairs, or two parallel arrays of the same length -- one of keys, and one of
+  // the corresponding values.
+  _.object = function(list, values) {
+    if (list == null) return {};
+    var result = {};
+    for (var i = 0, length = list.length; i < length; i++) {
+      if (values) {
+        result[list[i]] = values[i];
+      } else {
+        result[list[i][0]] = list[i][1];
+      }
+    }
+    return result;
   };
 
   // If the browser doesn't supply us with indexOf (I'm looking at you, **MSIE**),
@@ -4065,22 +3326,29 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // for **isSorted** to use binary search.
   _.indexOf = function(array, item, isSorted) {
     if (array == null) return -1;
-    var i, l;
+    var i = 0, length = array.length;
     if (isSorted) {
-      i = _.sortedIndex(array, item);
-      return array[i] === item ? i : -1;
+      if (typeof isSorted == 'number') {
+        i = (isSorted < 0 ? Math.max(0, length + isSorted) : isSorted);
+      } else {
+        i = _.sortedIndex(array, item);
+        return array[i] === item ? i : -1;
+      }
     }
-    if (nativeIndexOf && array.indexOf === nativeIndexOf) return array.indexOf(item);
-    for (i = 0, l = array.length; i < l; i++) if (i in array && array[i] === item) return i;
+    if (nativeIndexOf && array.indexOf === nativeIndexOf) return array.indexOf(item, isSorted);
+    for (; i < length; i++) if (array[i] === item) return i;
     return -1;
   };
 
   // Delegates to **ECMAScript 5**'s native `lastIndexOf` if available.
-  _.lastIndexOf = function(array, item) {
+  _.lastIndexOf = function(array, item, from) {
     if (array == null) return -1;
-    if (nativeLastIndexOf && array.lastIndexOf === nativeLastIndexOf) return array.lastIndexOf(item);
-    var i = array.length;
-    while (i--) if (i in array && array[i] === item) return i;
+    var hasIndex = from != null;
+    if (nativeLastIndexOf && array.lastIndexOf === nativeLastIndexOf) {
+      return hasIndex ? array.lastIndexOf(item, from) : array.lastIndexOf(item);
+    }
+    var i = (hasIndex ? from : array.length);
+    while (i--) if (array[i] === item) return i;
     return -1;
   };
 
@@ -4094,11 +3362,11 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     }
     step = arguments[2] || 1;
 
-    var len = Math.max(Math.ceil((stop - start) / step), 0);
+    var length = Math.max(Math.ceil((stop - start) / step), 0);
     var idx = 0;
-    var range = new Array(len);
+    var range = new Array(length);
 
-    while(idx < len) {
+    while(idx < length) {
       range[idx++] = start;
       start += step;
     }
@@ -4113,21 +3381,30 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   var ctor = function(){};
 
   // Create a function bound to a given object (assigning `this`, and arguments,
-  // optionally). Binding with arguments is also known as `curry`.
-  // Delegates to **ECMAScript 5**'s native `Function.bind` if available.
-  // We check for `func.bind` first, to fail fast when `func` is undefined.
-  _.bind = function bind(func, context) {
-    var bound, args;
-    if (func.bind === nativeBind && nativeBind) return nativeBind.apply(func, slice.call(arguments, 1));
+  // optionally). Delegates to **ECMAScript 5**'s native `Function.bind` if
+  // available.
+  _.bind = function(func, context) {
+    var args, bound;
+    if (nativeBind && func.bind === nativeBind) return nativeBind.apply(func, slice.call(arguments, 1));
     if (!_.isFunction(func)) throw new TypeError;
     args = slice.call(arguments, 2);
     return bound = function() {
       if (!(this instanceof bound)) return func.apply(context, args.concat(slice.call(arguments)));
       ctor.prototype = func.prototype;
       var self = new ctor;
+      ctor.prototype = null;
       var result = func.apply(self, args.concat(slice.call(arguments)));
       if (Object(result) === result) return result;
       return self;
+    };
+  };
+
+  // Partially apply a function by creating a version that has had some of its
+  // arguments pre-filled, without changing its dynamic `this` context.
+  _.partial = function(func) {
+    var args = slice.call(arguments, 1);
+    return function() {
+      return func.apply(this, args.concat(slice.call(arguments)));
     };
   };
 
@@ -4135,7 +3412,7 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // all callbacks defined on an object belong to it.
   _.bindAll = function(obj) {
     var funcs = slice.call(arguments, 1);
-    if (funcs.length == 0) funcs = _.functions(obj);
+    if (funcs.length === 0) throw new Error("bindAll must be passed function names");
     each(funcs, function(f) { obj[f] = _.bind(obj[f], obj); });
     return obj;
   };
@@ -4164,25 +3441,34 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   };
 
   // Returns a function, that, when invoked, will only be triggered at most once
-  // during a given window of time.
-  _.throttle = function(func, wait) {
-    var context, args, timeout, throttling, more, result;
-    var whenDone = _.debounce(function(){ more = throttling = false; }, wait);
+  // during a given window of time. Normally, the throttled function will run
+  // as much as it can, without ever going more than once per `wait` duration;
+  // but if you'd like to disable the execution on the leading edge, pass
+  // `{leading: false}`. To disable execution on the trailing edge, ditto.
+  _.throttle = function(func, wait, options) {
+    var context, args, result;
+    var timeout = null;
+    var previous = 0;
+    options || (options = {});
+    var later = function() {
+      previous = options.leading === false ? 0 : new Date;
+      timeout = null;
+      result = func.apply(context, args);
+    };
     return function() {
-      context = this; args = arguments;
-      var later = function() {
+      var now = new Date;
+      if (!previous && options.leading === false) previous = now;
+      var remaining = wait - (now - previous);
+      context = this;
+      args = arguments;
+      if (remaining <= 0) {
+        clearTimeout(timeout);
         timeout = null;
-        if (more) func.apply(context, args);
-        whenDone();
-      };
-      if (!timeout) timeout = setTimeout(later, wait);
-      if (throttling) {
-        more = true;
-      } else {
+        previous = now;
         result = func.apply(context, args);
+      } else if (!timeout && options.trailing !== false) {
+        timeout = setTimeout(later, remaining);
       }
-      whenDone();
-      throttling = true;
       return result;
     };
   };
@@ -4192,16 +3478,26 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // N milliseconds. If `immediate` is passed, trigger the function on the
   // leading edge, instead of the trailing.
   _.debounce = function(func, wait, immediate) {
-    var timeout;
+    var timeout, args, context, timestamp, result;
     return function() {
-      var context = this, args = arguments;
+      context = this;
+      args = arguments;
+      timestamp = new Date();
       var later = function() {
-        timeout = null;
-        if (!immediate) func.apply(context, args);
+        var last = (new Date()) - timestamp;
+        if (last < wait) {
+          timeout = setTimeout(later, wait - last);
+        } else {
+          timeout = null;
+          if (!immediate) result = func.apply(context, args);
+        }
       };
-      if (immediate && !timeout) func.apply(context, args);
-      clearTimeout(timeout);
-      timeout = setTimeout(later, wait);
+      var callNow = immediate && !timeout;
+      if (!timeout) {
+        timeout = setTimeout(later, wait);
+      }
+      if (callNow) result = func.apply(context, args);
+      return result;
     };
   };
 
@@ -4212,7 +3508,9 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     return function() {
       if (ran) return memo;
       ran = true;
-      return memo = func.apply(this, arguments);
+      memo = func.apply(this, arguments);
+      func = null;
+      return memo;
     };
   };
 
@@ -4221,7 +3519,8 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // conditionally execute the original function.
   _.wrap = function(func, wrapper) {
     return function() {
-      var args = [func].concat(slice.call(arguments, 0));
+      var args = [func];
+      push.apply(args, arguments);
       return wrapper.apply(this, args);
     };
   };
@@ -4241,9 +3540,10 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
 
   // Returns a function that will only be executed after being called N times.
   _.after = function(times, func) {
-    if (times <= 0) return func();
     return function() {
-      if (--times < 1) { return func.apply(this, arguments); }
+      if (--times < 1) {
+        return func.apply(this, arguments);
+      }
     };
   };
 
@@ -4255,13 +3555,40 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   _.keys = nativeKeys || function(obj) {
     if (obj !== Object(obj)) throw new TypeError('Invalid object');
     var keys = [];
-    for (var key in obj) if (_.has(obj, key)) keys[keys.length] = key;
+    for (var key in obj) if (_.has(obj, key)) keys.push(key);
     return keys;
   };
 
   // Retrieve the values of an object's properties.
   _.values = function(obj) {
-    return _.map(obj, _.identity);
+    var keys = _.keys(obj);
+    var length = keys.length;
+    var values = new Array(length);
+    for (var i = 0; i < length; i++) {
+      values[i] = obj[keys[i]];
+    }
+    return values;
+  };
+
+  // Convert an object into a list of `[key, value]` pairs.
+  _.pairs = function(obj) {
+    var keys = _.keys(obj);
+    var length = keys.length;
+    var pairs = new Array(length);
+    for (var i = 0; i < length; i++) {
+      pairs[i] = [keys[i], obj[keys[i]]];
+    }
+    return pairs;
+  };
+
+  // Invert the keys and values of an object. The values must be serializable.
+  _.invert = function(obj) {
+    var result = {};
+    var keys = _.keys(obj);
+    for (var i = 0, length = keys.length; i < length; i++) {
+      result[obj[keys[i]]] = keys[i];
+    }
+    return result;
   };
 
   // Return a sorted list of the function names available on the object.
@@ -4277,8 +3604,10 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // Extend a given object with all the properties in passed-in object(s).
   _.extend = function(obj) {
     each(slice.call(arguments, 1), function(source) {
-      for (var prop in source) {
-        obj[prop] = source[prop];
+      if (source) {
+        for (var prop in source) {
+          obj[prop] = source[prop];
+        }
       }
     });
     return obj;
@@ -4286,18 +3615,31 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
 
   // Return a copy of the object only containing the whitelisted properties.
   _.pick = function(obj) {
-    var result = {};
-    each(_.flatten(slice.call(arguments, 1)), function(key) {
-      if (key in obj) result[key] = obj[key];
+    var copy = {};
+    var keys = concat.apply(ArrayProto, slice.call(arguments, 1));
+    each(keys, function(key) {
+      if (key in obj) copy[key] = obj[key];
     });
-    return result;
+    return copy;
+  };
+
+   // Return a copy of the object without the blacklisted properties.
+  _.omit = function(obj) {
+    var copy = {};
+    var keys = concat.apply(ArrayProto, slice.call(arguments, 1));
+    for (var key in obj) {
+      if (!_.contains(keys, key)) copy[key] = obj[key];
+    }
+    return copy;
   };
 
   // Fill in a given object with default properties.
   _.defaults = function(obj) {
     each(slice.call(arguments, 1), function(source) {
-      for (var prop in source) {
-        if (obj[prop] == null) obj[prop] = source[prop];
+      if (source) {
+        for (var prop in source) {
+          if (obj[prop] === void 0) obj[prop] = source[prop];
+        }
       }
     });
     return obj;
@@ -4317,19 +3659,16 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     return obj;
   };
 
-  // Internal recursive comparison function.
-  function eq(a, b, stack) {
+  // Internal recursive comparison function for `isEqual`.
+  var eq = function(a, b, aStack, bStack) {
     // Identical objects are equal. `0 === -0`, but they aren't identical.
-    // See the Harmony `egal` proposal: http://wiki.ecmascript.org/doku.php?id=harmony:egal.
+    // See the [Harmony `egal` proposal](http://wiki.ecmascript.org/doku.php?id=harmony:egal).
     if (a === b) return a !== 0 || 1 / a == 1 / b;
     // A strict comparison is necessary because `null == undefined`.
     if (a == null || b == null) return a === b;
     // Unwrap any wrapped objects.
-    if (a._chain) a = a._wrapped;
-    if (b._chain) b = b._wrapped;
-    // Invoke a custom `isEqual` method if one is provided.
-    if (a.isEqual && _.isFunction(a.isEqual)) return a.isEqual(b);
-    if (b.isEqual && _.isFunction(b.isEqual)) return b.isEqual(a);
+    if (a instanceof _) a = a._wrapped;
+    if (b instanceof _) b = b._wrapped;
     // Compare `[[Class]]` names.
     var className = toString.call(a);
     if (className != toString.call(b)) return false;
@@ -4359,14 +3698,22 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     if (typeof a != 'object' || typeof b != 'object') return false;
     // Assume equality for cyclic structures. The algorithm for detecting cyclic
     // structures is adapted from ES 5.1 section 15.12.3, abstract operation `JO`.
-    var length = stack.length;
+    var length = aStack.length;
     while (length--) {
       // Linear search. Performance is inversely proportional to the number of
       // unique nested structures.
-      if (stack[length] == a) return true;
+      if (aStack[length] == a) return bStack[length] == b;
+    }
+    // Objects with different constructors are not equivalent, but `Object`s
+    // from different frames are.
+    var aCtor = a.constructor, bCtor = b.constructor;
+    if (aCtor !== bCtor && !(_.isFunction(aCtor) && (aCtor instanceof aCtor) &&
+                             _.isFunction(bCtor) && (bCtor instanceof bCtor))) {
+      return false;
     }
     // Add the first object to the stack of traversed objects.
-    stack.push(a);
+    aStack.push(a);
+    bStack.push(b);
     var size = 0, result = true;
     // Recursively compare objects and arrays.
     if (className == '[object Array]') {
@@ -4376,20 +3723,17 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
       if (result) {
         // Deep compare the contents, ignoring non-numeric properties.
         while (size--) {
-          // Ensure commutative equality for sparse arrays.
-          if (!(result = size in a == size in b && eq(a[size], b[size], stack))) break;
+          if (!(result = eq(a[size], b[size], aStack, bStack))) break;
         }
       }
     } else {
-      // Objects with different constructors are not equivalent.
-      if ('constructor' in a != 'constructor' in b || a.constructor != b.constructor) return false;
       // Deep compare objects.
       for (var key in a) {
         if (_.has(a, key)) {
           // Count the expected number of properties.
           size++;
           // Deep compare each member.
-          if (!(result = _.has(b, key) && eq(a[key], b[key], stack))) break;
+          if (!(result = _.has(b, key) && eq(a[key], b[key], aStack, bStack))) break;
         }
       }
       // Ensure that both objects contain the same number of properties.
@@ -4401,13 +3745,14 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
       }
     }
     // Remove the first object from the stack of traversed objects.
-    stack.pop();
+    aStack.pop();
+    bStack.pop();
     return result;
-  }
+  };
 
   // Perform a deep comparison to check if two objects are equal.
   _.isEqual = function(a, b) {
-    return eq(a, b, []);
+    return eq(a, b, [], []);
   };
 
   // Is a given array, string, or object empty?
@@ -4421,7 +3766,7 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
 
   // Is a given value a DOM element?
   _.isElement = function(obj) {
-    return !!(obj && obj.nodeType == 1);
+    return !!(obj && obj.nodeType === 1);
   };
 
   // Is a given value an array?
@@ -4435,55 +3780,41 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     return obj === Object(obj);
   };
 
-  // Is a given variable an arguments object?
-  _.isArguments = function(obj) {
-    return toString.call(obj) == '[object Arguments]';
-  };
+  // Add some isType methods: isArguments, isFunction, isString, isNumber, isDate, isRegExp.
+  each(['Arguments', 'Function', 'String', 'Number', 'Date', 'RegExp'], function(name) {
+    _['is' + name] = function(obj) {
+      return toString.call(obj) == '[object ' + name + ']';
+    };
+  });
+
+  // Define a fallback version of the method in browsers (ahem, IE), where
+  // there isn't any inspectable "Arguments" type.
   if (!_.isArguments(arguments)) {
     _.isArguments = function(obj) {
       return !!(obj && _.has(obj, 'callee'));
     };
   }
 
-  // Is a given value a function?
-  _.isFunction = function(obj) {
-    return toString.call(obj) == '[object Function]';
-  };
-
-  // Is a given value a string?
-  _.isString = function(obj) {
-    return toString.call(obj) == '[object String]';
-  };
-
-  // Is a given value a number?
-  _.isNumber = function(obj) {
-    return toString.call(obj) == '[object Number]';
-  };
+  // Optimize `isFunction` if appropriate.
+  if (typeof (/./) !== 'function') {
+    _.isFunction = function(obj) {
+      return typeof obj === 'function';
+    };
+  }
 
   // Is a given object a finite number?
   _.isFinite = function(obj) {
-    return _.isNumber(obj) && isFinite(obj);
+    return isFinite(obj) && !isNaN(parseFloat(obj));
   };
 
-  // Is the given value `NaN`?
+  // Is the given value `NaN`? (NaN is the only number which does not equal itself).
   _.isNaN = function(obj) {
-    // `NaN` is the only value for which `===` is not reflexive.
-    return obj !== obj;
+    return _.isNumber(obj) && obj != +obj;
   };
 
   // Is a given value a boolean?
   _.isBoolean = function(obj) {
     return obj === true || obj === false || toString.call(obj) == '[object Boolean]';
-  };
-
-  // Is a given value a date?
-  _.isDate = function(obj) {
-    return toString.call(obj) == '[object Date]';
-  };
-
-  // Is the given value a regular expression?
-  _.isRegExp = function(obj) {
-    return toString.call(obj) == '[object RegExp]';
   };
 
   // Is a given value equal to null?
@@ -4496,7 +3827,8 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     return obj === void 0;
   };
 
-  // Has own property?
+  // Shortcut function for checking if an object has a given property directly
+  // on itself (in other words, not on a prototype).
   _.has = function(obj, key) {
     return hasOwnProperty.call(obj, key);
   };
@@ -4517,28 +3849,66 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   };
 
   // Run a function **n** times.
-  _.times = function (n, iterator, context) {
-    for (var i = 0; i < n; i++) iterator.call(context, i);
+  _.times = function(n, iterator, context) {
+    var accum = Array(Math.max(0, n));
+    for (var i = 0; i < n; i++) accum[i] = iterator.call(context, i);
+    return accum;
   };
 
-  // Escape a string for HTML interpolation.
-  _.escape = function(string) {
-    return (''+string).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;').replace(/\//g,'&#x2F;');
+  // Return a random integer between min and max (inclusive).
+  _.random = function(min, max) {
+    if (max == null) {
+      max = min;
+      min = 0;
+    }
+    return min + Math.floor(Math.random() * (max - min + 1));
   };
 
-  // If the value of the named property is a function then invoke it;
-  // otherwise, return it.
+  // List of HTML entities for escaping.
+  var entityMap = {
+    escape: {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#x27;'
+    }
+  };
+  entityMap.unescape = _.invert(entityMap.escape);
+
+  // Regexes containing the keys and values listed immediately above.
+  var entityRegexes = {
+    escape:   new RegExp('[' + _.keys(entityMap.escape).join('') + ']', 'g'),
+    unescape: new RegExp('(' + _.keys(entityMap.unescape).join('|') + ')', 'g')
+  };
+
+  // Functions for escaping and unescaping strings to/from HTML interpolation.
+  _.each(['escape', 'unescape'], function(method) {
+    _[method] = function(string) {
+      if (string == null) return '';
+      return ('' + string).replace(entityRegexes[method], function(match) {
+        return entityMap[method][match];
+      });
+    };
+  });
+
+  // If the value of the named `property` is a function then invoke it with the
+  // `object` as context; otherwise, return it.
   _.result = function(object, property) {
-    if (object == null) return null;
+    if (object == null) return void 0;
     var value = object[property];
     return _.isFunction(value) ? value.call(object) : value;
   };
 
-  // Add your own custom functions to the Underscore object, ensuring that
-  // they're correctly added to the OOP wrapper as well.
+  // Add your own custom functions to the Underscore object.
   _.mixin = function(obj) {
-    each(_.functions(obj), function(name){
-      addToWrapper(name, _[name] = obj[name]);
+    each(_.functions(obj), function(name) {
+      var func = _[name] = obj[name];
+      _.prototype[name] = function() {
+        var args = [this._wrapped];
+        push.apply(args, arguments);
+        return result.call(this, func.apply(_, args));
+      };
     });
   };
 
@@ -4546,7 +3916,7 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // Useful for temporary DOM ids.
   var idCounter = 0;
   _.uniqueId = function(prefix) {
-    var id = idCounter++;
+    var id = ++idCounter + '';
     return prefix ? prefix + id : id;
   };
 
@@ -4561,72 +3931,78 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // When customizing `templateSettings`, if you don't want to define an
   // interpolation, evaluation or escaping regex, we need one that is
   // guaranteed not to match.
-  var noMatch = /.^/;
+  var noMatch = /(.)^/;
 
   // Certain characters need to be escaped so that they can be put into a
   // string literal.
   var escapes = {
-    '\\': '\\',
-    "'": "'",
-    'r': '\r',
-    'n': '\n',
-    't': '\t',
-    'u2028': '\u2028',
-    'u2029': '\u2029'
+    "'":      "'",
+    '\\':     '\\',
+    '\r':     'r',
+    '\n':     'n',
+    '\t':     't',
+    '\u2028': 'u2028',
+    '\u2029': 'u2029'
   };
 
-  for (var p in escapes) escapes[escapes[p]] = p;
   var escaper = /\\|'|\r|\n|\t|\u2028|\u2029/g;
-  var unescaper = /\\(\\|'|r|n|t|u2028|u2029)/g;
-
-  // Within an interpolation, evaluation, or escaping, remove HTML escaping
-  // that had been previously added.
-  var unescape = function(code) {
-    return code.replace(unescaper, function(match, escape) {
-      return escapes[escape];
-    });
-  };
 
   // JavaScript micro-templating, similar to John Resig's implementation.
   // Underscore templating handles arbitrary delimiters, preserves whitespace,
   // and correctly escapes quotes within interpolated code.
   _.template = function(text, data, settings) {
-    settings = _.defaults(settings || {}, _.templateSettings);
+    var render;
+    settings = _.defaults({}, settings, _.templateSettings);
 
-    // Compile the template source, taking care to escape characters that
-    // cannot be included in a string literal and then unescape them in code
-    // blocks.
-    var source = "__p+='" + text
-      .replace(escaper, function(match) {
-        return '\\' + escapes[match];
-      })
-      .replace(settings.escape || noMatch, function(match, code) {
-        return "'+\n_.escape(" + unescape(code) + ")+\n'";
-      })
-      .replace(settings.interpolate || noMatch, function(match, code) {
-        return "'+\n(" + unescape(code) + ")+\n'";
-      })
-      .replace(settings.evaluate || noMatch, function(match, code) {
-        return "';\n" + unescape(code) + "\n;__p+='";
-      }) + "';\n";
+    // Combine delimiters into one regular expression via alternation.
+    var matcher = new RegExp([
+      (settings.escape || noMatch).source,
+      (settings.interpolate || noMatch).source,
+      (settings.evaluate || noMatch).source
+    ].join('|') + '|$', 'g');
+
+    // Compile the template source, escaping string literals appropriately.
+    var index = 0;
+    var source = "__p+='";
+    text.replace(matcher, function(match, escape, interpolate, evaluate, offset) {
+      source += text.slice(index, offset)
+        .replace(escaper, function(match) { return '\\' + escapes[match]; });
+
+      if (escape) {
+        source += "'+\n((__t=(" + escape + "))==null?'':_.escape(__t))+\n'";
+      }
+      if (interpolate) {
+        source += "'+\n((__t=(" + interpolate + "))==null?'':__t)+\n'";
+      }
+      if (evaluate) {
+        source += "';\n" + evaluate + "\n__p+='";
+      }
+      index = offset + match.length;
+      return match;
+    });
+    source += "';\n";
 
     // If a variable is not specified, place data values in local scope.
     if (!settings.variable) source = 'with(obj||{}){\n' + source + '}\n';
 
-    source = "var __p='';" +
-      "var print=function(){__p+=Array.prototype.join.call(arguments, '')};\n" +
+    source = "var __t,__p='',__j=Array.prototype.join," +
+      "print=function(){__p+=__j.call(arguments,'');};\n" +
       source + "return __p;\n";
 
-    var render = new Function(settings.variable || 'obj', '_', source);
+    try {
+      render = new Function(settings.variable || 'obj', '_', source);
+    } catch (e) {
+      e.source = source;
+      throw e;
+    }
+
     if (data) return render(data, _);
     var template = function(data) {
       return render.call(this, data, _);
     };
 
-    // Provide the compiled function source as a convenience for build time
-    // precompilation.
-    template.source = 'function(' + (settings.variable || 'obj') + '){\n' +
-      source + '}';
+    // Provide the compiled function source as a convenience for precompilation.
+    template.source = 'function(' + (settings.variable || 'obj') + '){\n' + source + '}';
 
     return template;
   };
@@ -4636,29 +4012,15 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
     return _(obj).chain();
   };
 
-  // The OOP Wrapper
+  // OOP
   // ---------------
-
   // If Underscore is called as a function, it returns a wrapped object that
   // can be used OO-style. This wrapper holds altered versions of all the
   // underscore functions. Wrapped objects may be chained.
-  var wrapper = function(obj) { this._wrapped = obj; };
-
-  // Expose `wrapper.prototype` as `_.prototype`
-  _.prototype = wrapper.prototype;
 
   // Helper function to continue chaining intermediate results.
-  var result = function(obj, chain) {
-    return chain ? _(obj).chain() : obj;
-  };
-
-  // A method to easily add functions to the OOP wrapper.
-  var addToWrapper = function(name, func) {
-    wrapper.prototype[name] = function() {
-      var args = slice.call(arguments);
-      unshift.call(args, this._wrapped);
-      return result(func.apply(_, args), this._chain);
-    };
+  var result = function(obj) {
+    return this._chain ? _(obj).chain() : obj;
   };
 
   // Add all of the Underscore functions to the wrapper object.
@@ -4667,33 +4029,36 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
   // Add all mutator Array functions to the wrapper.
   each(['pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'], function(name) {
     var method = ArrayProto[name];
-    wrapper.prototype[name] = function() {
-      var wrapped = this._wrapped;
-      method.apply(wrapped, arguments);
-      var length = wrapped.length;
-      if ((name == 'shift' || name == 'splice') && length === 0) delete wrapped[0];
-      return result(wrapped, this._chain);
+    _.prototype[name] = function() {
+      var obj = this._wrapped;
+      method.apply(obj, arguments);
+      if ((name == 'shift' || name == 'splice') && obj.length === 0) delete obj[0];
+      return result.call(this, obj);
     };
   });
 
   // Add all accessor Array functions to the wrapper.
   each(['concat', 'join', 'slice'], function(name) {
     var method = ArrayProto[name];
-    wrapper.prototype[name] = function() {
-      return result(method.apply(this._wrapped, arguments), this._chain);
+    _.prototype[name] = function() {
+      return result.call(this, method.apply(this._wrapped, arguments));
     };
   });
 
-  // Start chaining a wrapped Underscore object.
-  wrapper.prototype.chain = function() {
-    this._chain = true;
-    return this;
-  };
+  _.extend(_.prototype, {
 
-  // Extracts the result from a wrapped and chained object.
-  wrapper.prototype.value = function() {
-    return this._wrapped;
-  };
+    // Start chaining a wrapped Underscore object.
+    chain: function() {
+      this._chain = true;
+      return this;
+    },
+
+    // Extracts the result from a wrapped and chained object.
+    value: function() {
+      return this._wrapped;
+    }
+
+  });
 
 }).call(this);
 
@@ -4702,6 +4067,7 @@ require.define("/node_modules/underscore/underscore.js",function(require,module,
 require.define("/cucumber/support_code/library",function(require,module,exports,__dirname,__filename,process){var Library = function(supportCodeDefinition) {
   var Cucumber = require('../../cucumber');
 
+  var listeners        = Cucumber.Type.Collection();
   var stepDefinitions  = Cucumber.Type.Collection();
   var hooker           = Cucumber.SupportCode.Library.Hooker();
   var worldConstructor = Cucumber.SupportCode.WorldConstructor();
@@ -4751,9 +4117,23 @@ require.define("/cucumber/support_code/library",function(require,module,exports,
       stepDefinitions.add(stepDefinition);
     },
 
+    registerListener: function registerListener(listener) {
+      listeners.add(listener);
+    },
+
+    registerHandler: function registerHandler(eventName, handler) {
+      var listener = Cucumber.Listener();
+      listener.setHandlerForEvent(eventName, handler);
+      self.registerListener(listener);
+    },
+
+    getListeners: function getListeners() {
+      return listeners;
+    },
+
     instantiateNewWorld: function instantiateNewWorld(callback) {
-      var world = new worldConstructor(function(explicitWorld) {
-        process.nextTick(function() { // release the constructor
+      var world = new worldConstructor(function (explicitWorld) {
+        process.nextTick(function () { // release the constructor
           callback(explicitWorld || world);
         });
       });
@@ -4761,20 +4141,43 @@ require.define("/cucumber/support_code/library",function(require,module,exports,
   };
 
   var supportCodeHelper = {
-    Around     : self.defineAroundHook,
-    Before     : self.defineBeforeHook,
-    After      : self.defineAfterHook,
-    Given      : self.defineStep,
-    When       : self.defineStep,
-    Then       : self.defineStep,
-    defineStep : self.defineStep,
-    World      : worldConstructor
+    Around           : self.defineAroundHook,
+    Before           : self.defineBeforeHook,
+    After            : self.defineAfterHook,
+    Given            : self.defineStep,
+    When             : self.defineStep,
+    Then             : self.defineStep,
+    defineStep       : self.defineStep,
+    registerListener : self.registerListener,
+    registerHandler  : self.registerHandler,
+    World            : worldConstructor
   };
+
+  appendEventHandlers(supportCodeHelper, self);
   supportCodeDefinition.call(supportCodeHelper);
   worldConstructor = supportCodeHelper.World;
 
   return self;
 };
+
+function appendEventHandlers(supportCodeHelper, library) {
+  var Cucumber = require('../../cucumber');
+  var events = Cucumber.Listener.Events;
+  var eventName;
+
+  for (eventName in events) {
+    if (events.hasOwnProperty(eventName)) {
+      supportCodeHelper[eventName] = createEventListenerMethod(library, eventName);
+    }
+  }
+}
+
+function createEventListenerMethod(library, eventName) {
+  return function(handler) {
+     library.registerHandler(eventName, handler);
+  };
+}
+
 Library.Hooker = require('./library/hooker');
 module.exports = Library;
 
@@ -4887,6 +4290,27 @@ require.define("/cucumber/support_code/step_definition",function(require,module,
     },
 
     invoke: function invoke(step, world, callback) {
+      var time = function time() {
+        if (typeof process !== 'undefined' && process.hrtime) {
+          return process.hrtime();
+        }
+        else {
+          return new Date().getTime();
+        }
+      };
+
+      var durationInNanoseconds = function durationInNanoseconds(start) {
+        if (typeof process !== 'undefined' && process.hrtime) {
+          var duration = process.hrtime(start);
+          return duration[0] * 1e9 + duration[1];
+        }
+        else {
+          return (new Date().getTime() - start) * 1e6;
+        }
+      };
+
+      var start = time();
+
       var cleanUp = function cleanUp() {
         Cucumber.Util.Exception.unregisterUncaughtExceptionHandler(handleException);
       };
@@ -4895,7 +4319,8 @@ require.define("/cucumber/support_code/step_definition",function(require,module,
         if (error) {
           codeCallback.fail(error);
         } else {
-          var successfulStepResult = Cucumber.Runtime.SuccessfulStepResult({step: step});
+          var duration = durationInNanoseconds(start);
+          var successfulStepResult = Cucumber.Runtime.SuccessfulStepResult({step: step, duration:duration});
           cleanUp();
           callback(successfulStepResult);
         }
@@ -4909,7 +4334,8 @@ require.define("/cucumber/support_code/step_definition",function(require,module,
 
       codeCallback.fail = function fail(failureReason) {
         var failureException = failureReason || new Error(StepDefinition.UNKNOWN_STEP_FAILURE_MESSAGE);
-        var failedStepResult = Cucumber.Runtime.FailedStepResult({step: step, failureException: failureException});
+        var duration = durationInNanoseconds(start);
+        var failedStepResult = Cucumber.Runtime.FailedStepResult({step: step, failureException: failureException, duration: duration});
         cleanUp();
         callback(failedStepResult);
       };
@@ -4965,8 +4391,10 @@ module.exports = StepDefinition;
 });
 
 require.define("/cucumber/support_code/step_definition_snippet_builder",function(require,module,exports,__dirname,__filename,process){var _  = require('underscore');
+var stepDefinitionSnippetBuilderSyntax = require('./step_definition_snippet_builder_syntax');
+_.str = require('underscore.string');
 
-var StepDefinitionSnippetBuilder = function(step) {
+var StepDefinitionSnippetBuilder = function (step, syntax) {
   var Cucumber = require('../../cucumber');
 
   var self = {
@@ -4975,99 +4403,873 @@ var StepDefinitionSnippetBuilder = function(step) {
       var pattern      = self.buildStepDefinitionPattern();
       var parameters   = self.buildStepDefinitionParameters();
       var snippet =
-        StepDefinitionSnippetBuilder.STEP_DEFINITION_START  +
-        functionName                                        +
-        StepDefinitionSnippetBuilder.STEP_DEFINITION_INNER1 +
-        pattern                                             +
-        StepDefinitionSnippetBuilder.STEP_DEFINITION_INNER2 +
-        parameters                                          +
-        StepDefinitionSnippetBuilder.STEP_DEFINITION_END;
+          syntax.getStepDefinitionStart()  +
+          functionName                     +
+          syntax.getStepDefinitionInner1() +
+          pattern                          +
+          syntax.getStepDefinitionInner2() +
+          parameters                       +
+          syntax.getStepDefinitionEnd();
       return snippet;
     },
 
     buildStepDefinitionFunctionName: function buildStepDefinitionFunctionName() {
       var functionName;
       if (step.isOutcomeStep())
-        functionName = StepDefinitionSnippetBuilder.OUTCOME_STEP_DEFINITION_FUNCTION_NAME;
+        functionName = syntax.getOutcomeStepDefinitionFunctionName();
       else if (step.isEventStep())
-        functionName = StepDefinitionSnippetBuilder.EVENT_STEP_DEFINITION_FUNCTION_NAME;
+        functionName = syntax.getEventStepDefinitionFunctionName();
       else
-        functionName = StepDefinitionSnippetBuilder.CONTEXT_STEP_DEFINITION_FUNCTION_NAME;
+        functionName = syntax.getContextStepDefinitionFunctionName();
       return functionName;
     },
 
     buildStepDefinitionPattern: function buildStepDefinitionPattern() {
-      var stepName              = step.getName();
+      var stepName              = step.isOutlineStep() ? step.getOriginalStep().getName() : step.getName();
       var escapedStepName       = Cucumber.Util.RegExp.escapeString(stepName);
       var parameterizedStepName = self.parameterizeStepName(escapedStepName);
       var pattern               =
-        StepDefinitionSnippetBuilder.PATTERN_START +
-        parameterizedStepName                      +
-        StepDefinitionSnippetBuilder.PATTERN_END
+          syntax.getPatternStart() +
+          parameterizedStepName +
+          syntax.getPatternEnd();
       return pattern;
     },
 
     buildStepDefinitionParameters: function buildStepDefinitionParameters() {
       var parameters = self.getStepDefinitionPatternMatchingGroupParameters();
       if (step.hasDocString())
-        parameters = parameters.concat([StepDefinitionSnippetBuilder.STEP_DEFINITION_DOC_STRING]);
+        parameters = parameters.concat([syntax.getStepDefinitionDocString()]);
       else if (step.hasDataTable())
-        parameters = parameters.concat([StepDefinitionSnippetBuilder.STEP_DEFINITION_DATA_TABLE]);
-      var parametersAndCallback =
-        parameters.concat([StepDefinitionSnippetBuilder.STEP_DEFINITION_CALLBACK]);
-      var parameterString = parametersAndCallback.join(StepDefinitionSnippetBuilder.FUNCTION_PARAMETER_SEPARATOR);
+        parameters = parameters.concat([syntax.getStepDefinitionDataTable()]);
+      var parametersAndCallback = parameters.concat([syntax.getStepDefinitionCallback()]);
+      var parameterString = parametersAndCallback.join(syntax.getFunctionParameterSeparator());
       return parameterString;
     },
 
     getStepDefinitionPatternMatchingGroupParameters: function getStepDefinitionPatternMatchingGroupParameters() {
       var parameterCount = self.countStepDefinitionPatternMatchingGroups();
       var parameters = [];
-      _(parameterCount).times(function(n) {
+      _(parameterCount).times(function (n) {
         var offset = n + 1;
         parameters.push('arg' + offset);
       });
-      return parameters;
+      var stepName = step.isOutlineStep() ? step.getOriginalStep().getName() : step.getName();
+      var outlineParams = stepName.match(StepDefinitionSnippetBuilder.OUTLINE_STRING_PATTERN);
+      function cleanParam(param){
+        return _.str.camelize(param.substr(1,param.length - 2));
+      }
+      var cleaned = _.map(outlineParams, cleanParam);
+      return parameters.concat(cleaned);
     },
 
     countStepDefinitionPatternMatchingGroups: function countStepDefinitionPatternMatchingGroups() {
       var stepDefinitionPattern    = self.buildStepDefinitionPattern();
-      var numberMatchingGroupCount =
-        Cucumber.Util.String.count(stepDefinitionPattern, StepDefinitionSnippetBuilder.NUMBER_MATCHING_GROUP);
-      var quotedStringMatchingGroupCount =
-        Cucumber.Util.String.count(stepDefinitionPattern, StepDefinitionSnippetBuilder.QUOTED_STRING_MATCHING_GROUP);
+      var numberMatchingGroupCount = Cucumber.Util.String.count(stepDefinitionPattern, syntax.getNumberMatchingGroup());
+      var quotedStringMatchingGroupCount = Cucumber.Util.String.count(stepDefinitionPattern, syntax.getQuotedStringMatchingGroup());
       var count = numberMatchingGroupCount + quotedStringMatchingGroupCount;
       return count;
     },
 
     parameterizeStepName: function parameterizeStepName(stepName) {
       var parameterizedStepName =
-        stepName
-        .replace(StepDefinitionSnippetBuilder.NUMBER_PATTERN, StepDefinitionSnippetBuilder.NUMBER_MATCHING_GROUP)
-        .replace(StepDefinitionSnippetBuilder.QUOTED_STRING_PATTERN, StepDefinitionSnippetBuilder.QUOTED_STRING_MATCHING_GROUP);
+          stepName
+          .replace(StepDefinitionSnippetBuilder.NUMBER_PATTERN, syntax.getNumberMatchingGroup())
+          .replace(StepDefinitionSnippetBuilder.QUOTED_STRING_PATTERN, syntax.getQuotedStringMatchingGroup())
+          .replace(StepDefinitionSnippetBuilder.OUTLINE_STRING_PATTERN, syntax.getOutlineExampleMatchingGroup());
       return parameterizedStepName;
     }
   };
   return self;
 };
 
-StepDefinitionSnippetBuilder.STEP_DEFINITION_START                 = 'this.';
-StepDefinitionSnippetBuilder.STEP_DEFINITION_INNER1                = '(';
-StepDefinitionSnippetBuilder.STEP_DEFINITION_INNER2                = ', function(';
-StepDefinitionSnippetBuilder.STEP_DEFINITION_END                   = ") {\n  // express the regexp above with the code you wish you had\n  callback.pending();\n});\n";
-StepDefinitionSnippetBuilder.STEP_DEFINITION_DOC_STRING            = 'string';
-StepDefinitionSnippetBuilder.STEP_DEFINITION_DATA_TABLE            = 'table';
-StepDefinitionSnippetBuilder.STEP_DEFINITION_CALLBACK              = 'callback';
-StepDefinitionSnippetBuilder.PATTERN_START                         = '/^';
-StepDefinitionSnippetBuilder.PATTERN_END                           = '$/';
-StepDefinitionSnippetBuilder.CONTEXT_STEP_DEFINITION_FUNCTION_NAME = 'Given';
-StepDefinitionSnippetBuilder.EVENT_STEP_DEFINITION_FUNCTION_NAME   = 'When';
-StepDefinitionSnippetBuilder.OUTCOME_STEP_DEFINITION_FUNCTION_NAME = 'Then';
-StepDefinitionSnippetBuilder.NUMBER_PATTERN                        = /\d+/gi;
-StepDefinitionSnippetBuilder.NUMBER_MATCHING_GROUP                 = '(\\d+)';
-StepDefinitionSnippetBuilder.QUOTED_STRING_PATTERN                 = /"[^"]*"/gi;
-StepDefinitionSnippetBuilder.QUOTED_STRING_MATCHING_GROUP          = '"([^"]*)"';
-StepDefinitionSnippetBuilder.FUNCTION_PARAMETER_SEPARATOR          = ', ';
+StepDefinitionSnippetBuilder.NUMBER_PATTERN         = /\d+/gi;
+StepDefinitionSnippetBuilder.QUOTED_STRING_PATTERN  = /"[^"]*"/gi;
+StepDefinitionSnippetBuilder.OUTLINE_STRING_PATTERN = /<[^>]*>/gi;
+
 module.exports = StepDefinitionSnippetBuilder;
+
+});
+
+require.define("/cucumber/support_code/step_definition_snippet_builder_syntax",function(require,module,exports,__dirname,__filename,process){var _                  = require('underscore');
+var Syntax             = function() {};
+var JavaScriptSyntax   = function() {};
+var CoffeeScriptSyntax = function() {};
+
+Syntax.prototype = {
+  getStepDefinitionDocString: function() {
+    return 'string';
+  },
+
+  getStepDefinitionDataTable: function() {
+    return 'table';
+  },
+
+  getStepDefinitionCallback: function() {
+    return 'callback';
+  },
+
+  getPatternStart: function() {
+    return '/^';
+  },
+
+  getPatternEnd: function() {
+    return '$/';
+  },
+
+  getContextStepDefinitionFunctionName: function() {
+    return 'Given';
+  },
+
+  getEventStepDefinitionFunctionName: function() {
+    return 'When';
+  },
+
+  getOutcomeStepDefinitionFunctionName: function() {
+    return 'Then';
+  },
+
+  getNumberMatchingGroup: function() {
+    return '(\\d+)';
+  },
+
+  getQuotedStringMatchingGroup: function() {
+    return '"([^"]*)"';
+  },
+
+  getOutlineExampleMatchingGroup: function() {
+    return '(.*)';
+  },
+
+  getFunctionParameterSeparator: function() {
+    return ', ';
+  },
+
+  getStepDefinitionEndComment: function() {
+    return 'Write code here that turns the phrase above into concrete actions';
+  }
+};
+
+JavaScriptSyntax.prototype = {
+  getStepDefinitionStart: function() {
+    return 'this.';
+  },
+
+  getStepDefinitionInner1: function() {
+    return '(';
+  },
+
+  getStepDefinitionInner2: function() {
+    return ', function (';
+  },
+
+  getStepDefinitionEnd: function() {
+    return ") {\n  // " + this.getStepDefinitionEndComment() + "\n  callback.pending();\n});\n";
+  },
+};
+
+_.extend(JavaScriptSyntax.prototype, Syntax.prototype);
+
+CoffeeScriptSyntax.prototype = {
+  getStepDefinitionStart: function() {
+    return '@';
+  },
+
+  getStepDefinitionInner1: function() {
+    return ' ';
+  },
+
+  getStepDefinitionInner2: function() {
+    return ', (';
+  },
+
+  getStepDefinitionEnd: function() {
+    return ") ->\n  # " + this.getStepDefinitionEndComment() + "\n  callback.pending()\n";
+  }
+};
+
+_.extend(CoffeeScriptSyntax.prototype, Syntax.prototype);
+
+exports.JavaScript   = JavaScriptSyntax;
+exports.CoffeeScript = CoffeeScriptSyntax;
+
+});
+
+require.define("/node_modules/underscore.string/package.json",function(require,module,exports,__dirname,__filename,process){module.exports = {"main":"./lib/underscore.string"}
+});
+
+require.define("/node_modules/underscore.string/lib/underscore.string.js",function(require,module,exports,__dirname,__filename,process){//  Underscore.string
+//  (c) 2010 Esa-Matti Suuronen <esa-matti aet suuronen dot org>
+//  Underscore.string is freely distributable under the terms of the MIT license.
+//  Documentation: https://github.com/epeli/underscore.string
+//  Some code is borrowed from MooTools and Alexandru Marasteanu.
+//  Version '2.3.2'
+
+!function(root, String){
+  'use strict';
+
+  // Defining helper functions.
+
+  var nativeTrim = String.prototype.trim;
+  var nativeTrimRight = String.prototype.trimRight;
+  var nativeTrimLeft = String.prototype.trimLeft;
+
+  var parseNumber = function(source) { return source * 1 || 0; };
+
+  var strRepeat = function(str, qty){
+    if (qty < 1) return '';
+    var result = '';
+    while (qty > 0) {
+      if (qty & 1) result += str;
+      qty >>= 1, str += str;
+    }
+    return result;
+  };
+
+  var slice = [].slice;
+
+  var defaultToWhiteSpace = function(characters) {
+    if (characters == null)
+      return '\\s';
+    else if (characters.source)
+      return characters.source;
+    else
+      return '[' + _s.escapeRegExp(characters) + ']';
+  };
+
+  // Helper for toBoolean
+  function boolMatch(s, matchers) {
+    var i, matcher, down = s.toLowerCase();
+    matchers = [].concat(matchers);
+    for (i = 0; i < matchers.length; i += 1) {
+      matcher = matchers[i];
+      if (!matcher) continue;
+      if (matcher.test && matcher.test(s)) return true;
+      if (matcher.toLowerCase() === down) return true;
+    }
+  }
+
+  var escapeChars = {
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    amp: '&',
+    apos: "'"
+  };
+
+  var reversedEscapeChars = {};
+  for(var key in escapeChars) reversedEscapeChars[escapeChars[key]] = key;
+  reversedEscapeChars["'"] = '#39';
+
+  // sprintf() for JavaScript 0.7-beta1
+  // http://www.diveintojavascript.com/projects/javascript-sprintf
+  //
+  // Copyright (c) Alexandru Marasteanu <alexaholic [at) gmail (dot] com>
+  // All rights reserved.
+
+  var sprintf = (function() {
+    function get_type(variable) {
+      return Object.prototype.toString.call(variable).slice(8, -1).toLowerCase();
+    }
+
+    var str_repeat = strRepeat;
+
+    var str_format = function() {
+      if (!str_format.cache.hasOwnProperty(arguments[0])) {
+        str_format.cache[arguments[0]] = str_format.parse(arguments[0]);
+      }
+      return str_format.format.call(null, str_format.cache[arguments[0]], arguments);
+    };
+
+    str_format.format = function(parse_tree, argv) {
+      var cursor = 1, tree_length = parse_tree.length, node_type = '', arg, output = [], i, k, match, pad, pad_character, pad_length;
+      for (i = 0; i < tree_length; i++) {
+        node_type = get_type(parse_tree[i]);
+        if (node_type === 'string') {
+          output.push(parse_tree[i]);
+        }
+        else if (node_type === 'array') {
+          match = parse_tree[i]; // convenience purposes only
+          if (match[2]) { // keyword argument
+            arg = argv[cursor];
+            for (k = 0; k < match[2].length; k++) {
+              if (!arg.hasOwnProperty(match[2][k])) {
+                throw new Error(sprintf('[_.sprintf] property "%s" does not exist', match[2][k]));
+              }
+              arg = arg[match[2][k]];
+            }
+          } else if (match[1]) { // positional argument (explicit)
+            arg = argv[match[1]];
+          }
+          else { // positional argument (implicit)
+            arg = argv[cursor++];
+          }
+
+          if (/[^s]/.test(match[8]) && (get_type(arg) != 'number')) {
+            throw new Error(sprintf('[_.sprintf] expecting number but found %s', get_type(arg)));
+          }
+          switch (match[8]) {
+            case 'b': arg = arg.toString(2); break;
+            case 'c': arg = String.fromCharCode(arg); break;
+            case 'd': arg = parseInt(arg, 10); break;
+            case 'e': arg = match[7] ? arg.toExponential(match[7]) : arg.toExponential(); break;
+            case 'f': arg = match[7] ? parseFloat(arg).toFixed(match[7]) : parseFloat(arg); break;
+            case 'o': arg = arg.toString(8); break;
+            case 's': arg = ((arg = String(arg)) && match[7] ? arg.substring(0, match[7]) : arg); break;
+            case 'u': arg = Math.abs(arg); break;
+            case 'x': arg = arg.toString(16); break;
+            case 'X': arg = arg.toString(16).toUpperCase(); break;
+          }
+          arg = (/[def]/.test(match[8]) && match[3] && arg >= 0 ? '+'+ arg : arg);
+          pad_character = match[4] ? match[4] == '0' ? '0' : match[4].charAt(1) : ' ';
+          pad_length = match[6] - String(arg).length;
+          pad = match[6] ? str_repeat(pad_character, pad_length) : '';
+          output.push(match[5] ? arg + pad : pad + arg);
+        }
+      }
+      return output.join('');
+    };
+
+    str_format.cache = {};
+
+    str_format.parse = function(fmt) {
+      var _fmt = fmt, match = [], parse_tree = [], arg_names = 0;
+      while (_fmt) {
+        if ((match = /^[^\x25]+/.exec(_fmt)) !== null) {
+          parse_tree.push(match[0]);
+        }
+        else if ((match = /^\x25{2}/.exec(_fmt)) !== null) {
+          parse_tree.push('%');
+        }
+        else if ((match = /^\x25(?:([1-9]\d*)\$|\(([^\)]+)\))?(\+)?(0|'[^$])?(-)?(\d+)?(?:\.(\d+))?([b-fosuxX])/.exec(_fmt)) !== null) {
+          if (match[2]) {
+            arg_names |= 1;
+            var field_list = [], replacement_field = match[2], field_match = [];
+            if ((field_match = /^([a-z_][a-z_\d]*)/i.exec(replacement_field)) !== null) {
+              field_list.push(field_match[1]);
+              while ((replacement_field = replacement_field.substring(field_match[0].length)) !== '') {
+                if ((field_match = /^\.([a-z_][a-z_\d]*)/i.exec(replacement_field)) !== null) {
+                  field_list.push(field_match[1]);
+                }
+                else if ((field_match = /^\[(\d+)\]/.exec(replacement_field)) !== null) {
+                  field_list.push(field_match[1]);
+                }
+                else {
+                  throw new Error('[_.sprintf] huh?');
+                }
+              }
+            }
+            else {
+              throw new Error('[_.sprintf] huh?');
+            }
+            match[2] = field_list;
+          }
+          else {
+            arg_names |= 2;
+          }
+          if (arg_names === 3) {
+            throw new Error('[_.sprintf] mixing positional and named placeholders is not (yet) supported');
+          }
+          parse_tree.push(match);
+        }
+        else {
+          throw new Error('[_.sprintf] huh?');
+        }
+        _fmt = _fmt.substring(match[0].length);
+      }
+      return parse_tree;
+    };
+
+    return str_format;
+  })();
+
+
+
+  // Defining underscore.string
+
+  var _s = {
+
+    VERSION: '2.3.0',
+
+    isBlank: function(str){
+      if (str == null) str = '';
+      return (/^\s*$/).test(str);
+    },
+
+    stripTags: function(str){
+      if (str == null) return '';
+      return String(str).replace(/<\/?[^>]+>/g, '');
+    },
+
+    capitalize : function(str){
+      str = str == null ? '' : String(str);
+      return str.charAt(0).toUpperCase() + str.slice(1);
+    },
+
+    chop: function(str, step){
+      if (str == null) return [];
+      str = String(str);
+      step = ~~step;
+      return step > 0 ? str.match(new RegExp('.{1,' + step + '}', 'g')) : [str];
+    },
+
+    clean: function(str){
+      return _s.strip(str).replace(/\s+/g, ' ');
+    },
+
+    count: function(str, substr){
+      if (str == null || substr == null) return 0;
+
+      str = String(str);
+      substr = String(substr);
+
+      var count = 0,
+        pos = 0,
+        length = substr.length;
+
+      while (true) {
+        pos = str.indexOf(substr, pos);
+        if (pos === -1) break;
+        count++;
+        pos += length;
+      }
+
+      return count;
+    },
+
+    chars: function(str) {
+      if (str == null) return [];
+      return String(str).split('');
+    },
+
+    swapCase: function(str) {
+      if (str == null) return '';
+      return String(str).replace(/\S/g, function(c){
+        return c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase();
+      });
+    },
+
+    escapeHTML: function(str) {
+      if (str == null) return '';
+      return String(str).replace(/[&<>"']/g, function(m){ return '&' + reversedEscapeChars[m] + ';'; });
+    },
+
+    unescapeHTML: function(str) {
+      if (str == null) return '';
+      return String(str).replace(/\&([^;]+);/g, function(entity, entityCode){
+        var match;
+
+        if (entityCode in escapeChars) {
+          return escapeChars[entityCode];
+        } else if (match = entityCode.match(/^#x([\da-fA-F]+)$/)) {
+          return String.fromCharCode(parseInt(match[1], 16));
+        } else if (match = entityCode.match(/^#(\d+)$/)) {
+          return String.fromCharCode(~~match[1]);
+        } else {
+          return entity;
+        }
+      });
+    },
+
+    escapeRegExp: function(str){
+      if (str == null) return '';
+      return String(str).replace(/([.*+?^=!:${}()|[\]\/\\])/g, '\\$1');
+    },
+
+    splice: function(str, i, howmany, substr){
+      var arr = _s.chars(str);
+      arr.splice(~~i, ~~howmany, substr);
+      return arr.join('');
+    },
+
+    insert: function(str, i, substr){
+      return _s.splice(str, i, 0, substr);
+    },
+
+    include: function(str, needle){
+      if (needle === '') return true;
+      if (str == null) return false;
+      return String(str).indexOf(needle) !== -1;
+    },
+
+    join: function() {
+      var args = slice.call(arguments),
+        separator = args.shift();
+
+      if (separator == null) separator = '';
+
+      return args.join(separator);
+    },
+
+    lines: function(str) {
+      if (str == null) return [];
+      return String(str).split("\n");
+    },
+
+    reverse: function(str){
+      return _s.chars(str).reverse().join('');
+    },
+
+    startsWith: function(str, starts){
+      if (starts === '') return true;
+      if (str == null || starts == null) return false;
+      str = String(str); starts = String(starts);
+      return str.length >= starts.length && str.slice(0, starts.length) === starts;
+    },
+
+    endsWith: function(str, ends){
+      if (ends === '') return true;
+      if (str == null || ends == null) return false;
+      str = String(str); ends = String(ends);
+      return str.length >= ends.length && str.slice(str.length - ends.length) === ends;
+    },
+
+    succ: function(str){
+      if (str == null) return '';
+      str = String(str);
+      return str.slice(0, -1) + String.fromCharCode(str.charCodeAt(str.length-1) + 1);
+    },
+
+    titleize: function(str){
+      if (str == null) return '';
+      str  = String(str).toLowerCase();
+      return str.replace(/(?:^|\s|-)\S/g, function(c){ return c.toUpperCase(); });
+    },
+
+    camelize: function(str){
+      return _s.trim(str).replace(/[-_\s]+(.)?/g, function(match, c){ return c ? c.toUpperCase() : ""; });
+    },
+
+    underscored: function(str){
+      return _s.trim(str).replace(/([a-z\d])([A-Z]+)/g, '$1_$2').replace(/[-\s]+/g, '_').toLowerCase();
+    },
+
+    dasherize: function(str){
+      return _s.trim(str).replace(/([A-Z])/g, '-$1').replace(/[-_\s]+/g, '-').toLowerCase();
+    },
+
+    classify: function(str){
+      return _s.titleize(String(str).replace(/[\W_]/g, ' ')).replace(/\s/g, '');
+    },
+
+    humanize: function(str){
+      return _s.capitalize(_s.underscored(str).replace(/_id$/,'').replace(/_/g, ' '));
+    },
+
+    trim: function(str, characters){
+      if (str == null) return '';
+      if (!characters && nativeTrim) return nativeTrim.call(str);
+      characters = defaultToWhiteSpace(characters);
+      return String(str).replace(new RegExp('\^' + characters + '+|' + characters + '+$', 'g'), '');
+    },
+
+    ltrim: function(str, characters){
+      if (str == null) return '';
+      if (!characters && nativeTrimLeft) return nativeTrimLeft.call(str);
+      characters = defaultToWhiteSpace(characters);
+      return String(str).replace(new RegExp('^' + characters + '+'), '');
+    },
+
+    rtrim: function(str, characters){
+      if (str == null) return '';
+      if (!characters && nativeTrimRight) return nativeTrimRight.call(str);
+      characters = defaultToWhiteSpace(characters);
+      return String(str).replace(new RegExp(characters + '+$'), '');
+    },
+
+    truncate: function(str, length, truncateStr){
+      if (str == null) return '';
+      str = String(str); truncateStr = truncateStr || '...';
+      length = ~~length;
+      return str.length > length ? str.slice(0, length) + truncateStr : str;
+    },
+
+    /**
+     * _s.prune: a more elegant version of truncate
+     * prune extra chars, never leaving a half-chopped word.
+     * @author github.com/rwz
+     */
+    prune: function(str, length, pruneStr){
+      if (str == null) return '';
+
+      str = String(str); length = ~~length;
+      pruneStr = pruneStr != null ? String(pruneStr) : '...';
+
+      if (str.length <= length) return str;
+
+      var tmpl = function(c){ return c.toUpperCase() !== c.toLowerCase() ? 'A' : ' '; },
+        template = str.slice(0, length+1).replace(/.(?=\W*\w*$)/g, tmpl); // 'Hello, world' -> 'HellAA AAAAA'
+
+      if (template.slice(template.length-2).match(/\w\w/))
+        template = template.replace(/\s*\S+$/, '');
+      else
+        template = _s.rtrim(template.slice(0, template.length-1));
+
+      return (template+pruneStr).length > str.length ? str : str.slice(0, template.length)+pruneStr;
+    },
+
+    words: function(str, delimiter) {
+      if (_s.isBlank(str)) return [];
+      return _s.trim(str, delimiter).split(delimiter || /\s+/);
+    },
+
+    pad: function(str, length, padStr, type) {
+      str = str == null ? '' : String(str);
+      length = ~~length;
+
+      var padlen  = 0;
+
+      if (!padStr)
+        padStr = ' ';
+      else if (padStr.length > 1)
+        padStr = padStr.charAt(0);
+
+      switch(type) {
+        case 'right':
+          padlen = length - str.length;
+          return str + strRepeat(padStr, padlen);
+        case 'both':
+          padlen = length - str.length;
+          return strRepeat(padStr, Math.ceil(padlen/2)) + str
+                  + strRepeat(padStr, Math.floor(padlen/2));
+        default: // 'left'
+          padlen = length - str.length;
+          return strRepeat(padStr, padlen) + str;
+        }
+    },
+
+    lpad: function(str, length, padStr) {
+      return _s.pad(str, length, padStr);
+    },
+
+    rpad: function(str, length, padStr) {
+      return _s.pad(str, length, padStr, 'right');
+    },
+
+    lrpad: function(str, length, padStr) {
+      return _s.pad(str, length, padStr, 'both');
+    },
+
+    sprintf: sprintf,
+
+    vsprintf: function(fmt, argv){
+      argv.unshift(fmt);
+      return sprintf.apply(null, argv);
+    },
+
+    toNumber: function(str, decimals) {
+      if (!str) return 0;
+      str = _s.trim(str);
+      if (!str.match(/^-?\d+(?:\.\d+)?$/)) return NaN;
+      return parseNumber(parseNumber(str).toFixed(~~decimals));
+    },
+
+    numberFormat : function(number, dec, dsep, tsep) {
+      if (isNaN(number) || number == null) return '';
+
+      number = number.toFixed(~~dec);
+      tsep = typeof tsep == 'string' ? tsep : ',';
+
+      var parts = number.split('.'), fnums = parts[0],
+        decimals = parts[1] ? (dsep || '.') + parts[1] : '';
+
+      return fnums.replace(/(\d)(?=(?:\d{3})+$)/g, '$1' + tsep) + decimals;
+    },
+
+    strRight: function(str, sep){
+      if (str == null) return '';
+      str = String(str); sep = sep != null ? String(sep) : sep;
+      var pos = !sep ? -1 : str.indexOf(sep);
+      return ~pos ? str.slice(pos+sep.length, str.length) : str;
+    },
+
+    strRightBack: function(str, sep){
+      if (str == null) return '';
+      str = String(str); sep = sep != null ? String(sep) : sep;
+      var pos = !sep ? -1 : str.lastIndexOf(sep);
+      return ~pos ? str.slice(pos+sep.length, str.length) : str;
+    },
+
+    strLeft: function(str, sep){
+      if (str == null) return '';
+      str = String(str); sep = sep != null ? String(sep) : sep;
+      var pos = !sep ? -1 : str.indexOf(sep);
+      return ~pos ? str.slice(0, pos) : str;
+    },
+
+    strLeftBack: function(str, sep){
+      if (str == null) return '';
+      str += ''; sep = sep != null ? ''+sep : sep;
+      var pos = str.lastIndexOf(sep);
+      return ~pos ? str.slice(0, pos) : str;
+    },
+
+    toSentence: function(array, separator, lastSeparator, serial) {
+      separator = separator || ', ';
+      lastSeparator = lastSeparator || ' and ';
+      var a = array.slice(), lastMember = a.pop();
+
+      if (array.length > 2 && serial) lastSeparator = _s.rtrim(separator) + lastSeparator;
+
+      return a.length ? a.join(separator) + lastSeparator + lastMember : lastMember;
+    },
+
+    toSentenceSerial: function() {
+      var args = slice.call(arguments);
+      args[3] = true;
+      return _s.toSentence.apply(_s, args);
+    },
+
+    slugify: function(str) {
+      if (str == null) return '';
+
+      var from  = "Ä…Ã Ã¡Ã¤Ã¢Ã£Ã¥Ã¦ÄƒÄ‡Ä™Ã¨Ã©Ã«ÃªÃ¬Ã­Ã¯Ã®Å‚Å„Ã²Ã³Ã¶Ã´ÃµÃ¸Å›È™È›Ã¹ÃºÃ¼Ã»Ã±Ã§Å¼Åº",
+          to    = "aaaaaaaaaceeeeeiiiilnoooooosstuuuunczz",
+          regex = new RegExp(defaultToWhiteSpace(from), 'g');
+
+      str = String(str).toLowerCase().replace(regex, function(c){
+        var index = from.indexOf(c);
+        return to.charAt(index) || '-';
+      });
+
+      return _s.dasherize(str.replace(/[^\w\s-]/g, ''));
+    },
+
+    surround: function(str, wrapper) {
+      return [wrapper, str, wrapper].join('');
+    },
+
+    quote: function(str, quoteChar) {
+      return _s.surround(str, quoteChar || '"');
+    },
+
+    unquote: function(str, quoteChar) {
+      quoteChar = quoteChar || '"';
+      if (str[0] === quoteChar && str[str.length-1] === quoteChar)
+        return str.slice(1,str.length-1);
+      else return str;
+    },
+
+    exports: function() {
+      var result = {};
+
+      for (var prop in this) {
+        if (!this.hasOwnProperty(prop) || prop.match(/^(?:include|contains|reverse)$/)) continue;
+        result[prop] = this[prop];
+      }
+
+      return result;
+    },
+
+    repeat: function(str, qty, separator){
+      if (str == null) return '';
+
+      qty = ~~qty;
+
+      // using faster implementation if separator is not needed;
+      if (separator == null) return strRepeat(String(str), qty);
+
+      // this one is about 300x slower in Google Chrome
+      for (var repeat = []; qty > 0; repeat[--qty] = str) {}
+      return repeat.join(separator);
+    },
+
+    naturalCmp: function(str1, str2){
+      if (str1 == str2) return 0;
+      if (!str1) return -1;
+      if (!str2) return 1;
+
+      var cmpRegex = /(\.\d+)|(\d+)|(\D+)/g,
+        tokens1 = String(str1).toLowerCase().match(cmpRegex),
+        tokens2 = String(str2).toLowerCase().match(cmpRegex),
+        count = Math.min(tokens1.length, tokens2.length);
+
+      for(var i = 0; i < count; i++) {
+        var a = tokens1[i], b = tokens2[i];
+
+        if (a !== b){
+          var num1 = parseInt(a, 10);
+          if (!isNaN(num1)){
+            var num2 = parseInt(b, 10);
+            if (!isNaN(num2) && num1 - num2)
+              return num1 - num2;
+          }
+          return a < b ? -1 : 1;
+        }
+      }
+
+      if (tokens1.length === tokens2.length)
+        return tokens1.length - tokens2.length;
+
+      return str1 < str2 ? -1 : 1;
+    },
+
+    levenshtein: function(str1, str2) {
+      if (str1 == null && str2 == null) return 0;
+      if (str1 == null) return String(str2).length;
+      if (str2 == null) return String(str1).length;
+
+      str1 = String(str1); str2 = String(str2);
+
+      var current = [], prev, value;
+
+      for (var i = 0; i <= str2.length; i++)
+        for (var j = 0; j <= str1.length; j++) {
+          if (i && j)
+            if (str1.charAt(j - 1) === str2.charAt(i - 1))
+              value = prev;
+            else
+              value = Math.min(current[j], current[j - 1], prev) + 1;
+          else
+            value = i + j;
+
+          prev = current[j];
+          current[j] = value;
+        }
+
+      return current.pop();
+    },
+
+    toBoolean: function(str, trueValues, falseValues) {
+      if (typeof str === "number") str = "" + str;
+      if (typeof str !== "string") return !!str;
+      str = _s.trim(str);
+      if (boolMatch(str, trueValues || ["true", "1"])) return true;
+      if (boolMatch(str, falseValues || ["false", "0"])) return false;
+    }
+  };
+
+  // Aliases
+
+  _s.strip    = _s.trim;
+  _s.lstrip   = _s.ltrim;
+  _s.rstrip   = _s.rtrim;
+  _s.center   = _s.lrpad;
+  _s.rjust    = _s.lpad;
+  _s.ljust    = _s.rpad;
+  _s.contains = _s.include;
+  _s.q        = _s.quote;
+  _s.toBool   = _s.toBoolean;
+
+  // Exporting
+
+  // CommonJS module is defined
+  if (typeof exports !== 'undefined') {
+    if (typeof module !== 'undefined' && module.exports)
+      module.exports = _s;
+
+    exports._s = _s;
+  }
+
+  // Register as a named module with AMD.
+  if (typeof define === 'function' && define.amd)
+    define('underscore.string', [], function(){ return _s; });
+
+
+  // Integrate with Underscore.js if defined
+  // or create our own underscore object.
+  root._ = root._ || {};
+  root._.string = root._.str = _s;
+}(this, String);
 
 });
 
@@ -5115,15 +5317,32 @@ module.exports     = Type;
 
 });
 
-require.define("/cucumber/type/collection",function(require,module,exports,__dirname,__filename,process){var Collection = function() {
+require.define("/cucumber/type/collection",function(require,module,exports,__dirname,__filename,process){var Collection = function () {
   var items = new Array();
   var self = {
-    add:         function add(item)                       { items.push(item); },
-    unshift:     function unshift(item)                   { items.unshift(item); },
-    getLast:     function getLast()                       { return items[items.length-1]; },
-    syncForEach: function syncForEach(userFunction)       { items.forEach(userFunction); },
-    forEach:     function forEach(userFunction, callback) {
+    add: function add(item) {
+      items.push(item);
+    },
+
+    unshift: function unshift(item) {
+      items.unshift(item);
+    },
+
+    shift: function shift() {
+      return items.shift();
+    },
+
+    getLast: function getLast() {
+      return items[items.length - 1];
+    },
+
+    syncForEach: function syncForEach(userFunction) {
+      items.forEach(userFunction);
+    },
+
+    forEach: function forEach(userFunction, callback) {
       var itemsCopy = items.slice(0);
+
       function iterate() {
         if (itemsCopy.length > 0) {
           processItem();
@@ -5131,15 +5350,27 @@ require.define("/cucumber/type/collection",function(require,module,exports,__dir
           callback();
         };
       }
+
       function processItem() {
         var item = itemsCopy.shift();
-        userFunction(item, function() {
+        userFunction(item, function () {
           iterate();
         });
       };
       iterate();
     },
-    length: function length() { return items.length; }
+
+    syncMap: function map(userFunction) {
+      var newCollection = Collection();
+      items.map(function (item) {
+        newCollection.add(userFunction(item));
+      });
+      return newCollection;
+    },
+
+    length: function length() {
+      return items.length;
+    }
   };
   return self;
 };
@@ -5204,6 +5435,7 @@ Util.Arguments = require('./util/arguments');
 Util.Exception = require('./util/exception');
 Util.RegExp    = require('./util/reg_exp');
 Util.String    = require('./util/string');
+Util.ConsoleColor = require('./util/colors');
 module.exports = Util;
 
 });
@@ -5218,14 +5450,14 @@ require.define("/cucumber/util/exception",function(require,module,exports,__dirn
   registerUncaughtExceptionHandler: function registerUncaughtExceptionHandler(exceptionHandler) {
     if (process.on)
       process.on('uncaughtException', exceptionHandler);
-    else
+    else if (typeof(window) != 'undefined')
       window.onerror = exceptionHandler;
   },
 
   unregisterUncaughtExceptionHandler: function unregisterUncaughtExceptionHandler(exceptionHandler) {
     if (process.removeListener)
       process.removeListener('uncaughtException', exceptionHandler);
-    else
+    else if (typeof(window) != 'undefined')
      window.onerror = void(0);
   }
 };
@@ -5321,13 +5553,12 @@ require.define("/cucumber/ast/data_table",function(require,module,exports,__dirn
       return self;
     },
 
-    raw: function raw() {
-      rawRows = [];
-      rowsCollection.syncForEach(function(row) {
-        var rawRow = row.raw();
-        rawRows.push(rawRow);
-      });
-      return rawRows;
+    getRows: function getRows(){
+        var newRows = Cucumber.Type.Collection();
+        rowsCollection.syncForEach(function(row){
+            newRows.add(row);
+        });
+        return newRows;
     },
 
     rows: function rows() {
@@ -5336,6 +5567,14 @@ require.define("/cucumber/ast/data_table",function(require,module,exports,__dirn
         if (index > 0) {
           rawRows.push(row.raw());
         }
+      });
+      return rawRows;
+    },
+      
+    raw: function raw(){
+      rawRows = [];
+      rowsCollection.syncForEach(function(row, index) {      
+          rawRows.push(row.raw());      
       });
       return rawRows;
     },
@@ -5360,6 +5599,10 @@ require.define("/cucumber/ast/data_table/row",function(require,module,exports,__
   self = {
     raw: function raw() {
       return cells;
+    },
+
+    getLine: function getLine(){
+      return line;
     }
   };
   return self;
@@ -5396,7 +5639,7 @@ require.define("/cucumber/ast/feature",function(require,module,exports,__dirname
   var Cucumber = require('../../cucumber');
 
   var background;
-  var scenarios = Cucumber.Type.Collection();
+  var featureElements = Cucumber.Type.Collection();
   var tags      = [];
 
   var self = {
@@ -5432,18 +5675,22 @@ require.define("/cucumber/ast/feature",function(require,module,exports,__dirname
       return (typeof(background) != 'undefined');
     },
 
-    addScenario: function addScenario(scenario) {
+    addFeatureElement: function addFeatureElement(featureElement) {
       var background = self.getBackground();
-      scenario.setBackground(background);
-      scenarios.add(scenario);
+      featureElement.setBackground(background);
+      featureElements.add(featureElement);        
+    },
+      
+    getFeatureElements: function getFeatureElements(){
+        return featureElements;
     },
 
-    getLastScenario: function getLastScenario() {
-      return scenarios.getLast();
+    getLastFeatureElement: function getLastFeatureElement() {
+      return featureElements.getLast();
     },
 
-    hasScenarios: function hasScenarios() {
-      return scenarios.length() > 0;
+    hasFeatureElements: function hasFeatureElements() {
+      return featureElements.length() > 0;
     },
 
     addTags: function setTags(newTags) {
@@ -5470,7 +5717,7 @@ require.define("/cucumber/ast/feature",function(require,module,exports,__dirname
     },
 
     instructVisitorToVisitScenarios: function instructVisitorToVisitScenarios(visitor, callback) {
-      scenarios.forEach(function(scenario, iterate) {
+      featureElements.forEach(function(scenario, iterate) {
         visitor.visitScenario(scenario, iterate);
       }, callback);
     }
@@ -5522,6 +5769,7 @@ var Filter = function(rules) {
 };
 Filter.AnyOfTagsRule          = require('./filter/any_of_tags_rule');
 Filter.ElementMatchingTagSpec = require('./filter/element_matching_tag_spec');
+Filter.ScenarioAtLineRule     = require('./filter/only_run_scenario_at_line_rule');
 module.exports = Filter;
 
 });
@@ -5584,16 +5832,45 @@ module.exports = ElementMatchingTagSpec;
 
 });
 
+require.define("/cucumber/ast/filter/only_run_scenario_at_line_rule",function(require,module,exports,__dirname,__filename,process){var ScenarioAtLineRule = function(tags) {
+  var Cucumber = require('../../../cucumber');
+
+  var self = {
+    isSatisfiedByElement: function isSatisfiedByElement(element) {
+      if (element.getUri && element.getLine){
+        var matches = Cucumber.Cli.ArgumentParser.FEATURE_FILENAME_AND_LINENUM_REGEXP.exec(element.getUri());
+        var specifiedLineNum = matches && matches[2];
+        if (specifiedLineNum) {
+          return parseInt(specifiedLineNum) === element.getLine();
+        }
+        return true;
+      }
+      return true;
+    }
+  };
+  return self;
+};
+module.exports = ScenarioAtLineRule;
+
+});
+
 require.define("/cucumber/ast/scenario",function(require,module,exports,__dirname,__filename,process){var Scenario = function(keyword, name, description, uri, line) {
   var Cucumber = require('../../cucumber');
 
   var background;
   var steps = Cucumber.Type.Collection();
+  var inheritedTags = [];
   var tags  = [];
 
   var self = {
+    payloadType: 'scenario',
+
     setBackground: function setBackground(newBackground) {
       background = newBackground;
+    },
+
+    buildScenarios: function buildScenarios() {
+      return Cucumber.Type.Collection();
     },
 
     getKeyword: function getKeyword() {
@@ -5630,11 +5907,36 @@ require.define("/cucumber/ast/scenario",function(require,module,exports,__dirnam
       return steps.getLast();
     },
 
-    addTags: function setTags(newTags) {
+    getMaxStepLength: function () {
+      var max = 0;
+      steps.syncForEach(function(step) {
+        var output = step.getKeyword() + step.getName();
+        if (output.length > max) max = output.length;
+      });
+      return max;
+    },
+
+    setSteps: function setSteps(newSteps){
+        steps = newSteps;
+    },
+
+    getSteps: function getSteps(){
+      return steps;
+    },
+
+    addTags: function addTags(newTags) {
       tags = tags.concat(newTags);
     },
 
+    addInheritedtags: function addInheritedtags(newTags) {
+      inheritedTags = tags.concat(newTags);
+    },
+
     getTags: function getTags() {
+      return tags.concat(inheritedTags);
+    },
+
+    getOwnTags: function getOwnTags() {
       return tags;
     },
 
@@ -5670,6 +5972,192 @@ module.exports = Scenario;
 
 });
 
+require.define("/cucumber/ast/scenario_outline",function(require,module,exports,__dirname,__filename,process){var ScenarioOutline = function (keyword, name, description, uri, line) {
+  var Cucumber = require('../../cucumber');
+  var self = Cucumber.Ast.Scenario(keyword, name, description, uri, line);
+  var examples = [];
+
+  self.payloadType = 'scenarioOutline';
+
+  self.setExamples = function (newExamples) {
+    examples = newExamples;
+  };
+
+  function buildScenario(row) {
+    var newSteps = self.applyExampleRow(row.example, self.getSteps());
+    var subScenario = Cucumber.Ast.Scenario(keyword, name, description, uri, line);
+    subScenario.setSteps(newSteps);
+    return subScenario;
+  }
+
+  self.buildScenarios = function () {
+    var rows = examples.getDataTable().getRows();
+    var firstRow = rows.shift().raw();
+
+    rows.syncForEach(function (row, index) {
+      row.example = {};
+      row.id = index;
+      for (var i = 0, ii = firstRow.length; i < ii; i++) {
+        row.example[firstRow[i]] = row.raw()[i];
+      }
+    });
+
+    var scenarios = Cucumber.Type.Collection();
+    rows.syncForEach(function (row) {
+      scenarios.add(buildScenario(row));
+    });
+    return scenarios;
+  };
+
+  self.getExamples = function () {
+    return examples;
+  };
+
+  self.applyExampleRow = function (example, steps) {
+    return steps.syncMap(function (step) {
+      var name = step.getName();
+      var table = Cucumber.Ast.DataTable();
+      var rows = [];
+      var hasDocString = step.hasDocString();
+      var hasDataTable = step.hasDataTable();
+      var oldDocString = hasDocString ? step.getDocString() : null;
+      var docString = hasDocString ? oldDocString.getContents() : null;
+
+      if (hasDataTable) {
+        step.getDataTable().getRows().syncForEach(function (row) {
+          var newRow = {
+            line: row.getLine(),
+            cells: JSON.stringify(row.raw())
+          };
+          rows.push(newRow);
+        });
+      }
+
+      for (var hashKey in example) {
+        if (Object.prototype.hasOwnProperty.call(example, hashKey)) {
+          var findText = '<' + hashKey + '>';
+          var exampleData = example[hashKey];
+
+          name = name.replace(findText, exampleData);
+
+          if (hasDataTable) {
+            rows = rows.map(function (row) {
+              return {
+                line: row.line,
+                cells: row.cells.replace(findText, exampleData)
+              };
+            });
+          }
+
+          if (hasDocString) {
+            docString = docString.replace(findText, exampleData);
+          }
+        }
+      }
+
+      var newStep = Cucumber.Ast.OutlineStep(step.getKeyword(), name, uri, step.getLine());
+      newStep.setOriginalStep(Cucumber.Ast.Step(step.getKeyword(), step.getName(), step.getUri(), step.getLine()));
+
+      if (hasDataTable) {
+        rows.forEach(function (row) {
+          table.attachRow(Cucumber.Ast.DataTable.Row(JSON.parse(row.cells), row.line));
+        });
+        newStep.attachDataTable(table);
+      }
+
+      if (hasDocString) {
+        newStep.attachDocString(Cucumber.Ast.DocString(oldDocString.getContentType(), docString, oldDocString.getLine()));
+      }
+      return newStep;
+    });
+  };
+
+  self.acceptVisitor = function (visitor, callback) {
+    callback();
+  };
+
+  return self;
+};
+module.exports = ScenarioOutline;
+
+});
+
+require.define("/cucumber/ast/outline_step",function(require,module,exports,__dirname,__filename,process){var OutlineStep = function(keyword, name, uri, line) {
+  var Cucumber = require('../../cucumber');
+  var self = Cucumber.Ast.Step(keyword, name, uri, line);
+
+  self.setOriginalStep = function setOriginalStep(originalStep){
+    self.originalStep = originalStep;
+  };
+
+  self.getOriginalStep = function getOriginalStep(originalStep){
+    return self.originalStep;
+  };
+
+  self.isOutlineStep = function isOutlineStep(){
+    return true;
+  };
+
+  return self;
+};
+module.exports = OutlineStep;
+
+});
+
+require.define("/cucumber/ast/examples",function(require,module,exports,__dirname,__filename,process){var Examples = function (keyword, name, description, line) {
+  var Cucumber = require('../../cucumber');
+  var dataTable;
+
+  var self = {
+    getKeyword: function getKeyword() {
+      return keyword;
+    },
+
+    getName: function getName() {
+      return name;
+    },
+
+    getDescription: function getDescription() {
+      return description;
+    },
+
+    getLine: function getLine() {
+      return line;
+    },
+
+    getDataTable: function getDataTable() {
+      return dataTable;
+    },
+
+    hasDataTable: function hasDataTable() {
+      return !!dataTable;
+    },
+
+    attachDataTable: function attachDataTable(_dataTable) {
+      dataTable = _dataTable;
+    },
+
+    attachDataTableRow: function attachDataTableRow(row) {
+      self.ensureDataTableIsAttached();
+      var dataTable = self.getDataTable();
+      dataTable.attachRow(row);
+    },
+
+    ensureDataTableIsAttached: function ensureDataTableIsAttached() {
+      var dataTable = self.getDataTable();
+      if (!dataTable) {
+        dataTable = Cucumber.Ast.DataTable();
+        self.attachDataTable(dataTable);
+      }
+    }
+  };
+
+  return self;
+};
+module.exports = Examples;
+
+});
+
 require.define("/cucumber/ast/step",function(require,module,exports,__dirname,__filename,process){var Step = function(keyword, name, uri, line) {
   var Cucumber = require('../../cucumber');
   var docString, dataTable, previousStep;
@@ -5677,6 +6165,10 @@ require.define("/cucumber/ast/step",function(require,module,exports,__dirname,__
   var self = {
     setPreviousStep: function setPreviousStep(newPreviousStep) {
       previousStep = newPreviousStep;
+    },
+
+    isOutlineStep: function isOutlineStep(){
+      return false;
     },
 
     getKeyword: function getKeyword() {
@@ -5757,43 +6249,43 @@ require.define("/cucumber/ast/step",function(require,module,exports,__dirname,__
 
     isOutcomeStep: function isOutcomeStep() {
       var isOutcomeStep =
-        self.hasOutcomeStepKeyword() || self.isRepeatingOutcomeStep();
+          self.hasOutcomeStepKeyword() || self.isRepeatingOutcomeStep();
       return isOutcomeStep;
     },
 
     isEventStep: function isEventStep() {
       var isEventStep =
-        self.hasEventStepKeyword() || self.isRepeatingEventStep();
+          self.hasEventStepKeyword() || self.isRepeatingEventStep();
       return isEventStep;
     },
 
     hasOutcomeStepKeyword: function hasOutcomeStepKeyword() {
       var hasOutcomeStepKeyword =
-        keyword == Step.OUTCOME_STEP_KEYWORD;
+          keyword == Step.OUTCOME_STEP_KEYWORD;
       return hasOutcomeStepKeyword;
     },
 
     hasEventStepKeyword: function hasEventStepKeyword() {
       var hasEventStepKeyword =
-        keyword == Step.EVENT_STEP_KEYWORD;
+          keyword == Step.EVENT_STEP_KEYWORD;
       return hasEventStepKeyword;
     },
 
     isRepeatingOutcomeStep: function isRepeatingOutcomeStep() {
       var isRepeatingOutcomeStep =
-        self.hasRepeatStepKeyword() && self.isPrecededByOutcomeStep();
+          self.hasRepeatStepKeyword() && self.isPrecededByOutcomeStep();
       return isRepeatingOutcomeStep;
     },
 
     isRepeatingEventStep: function isRepeatingEventStep() {
       var isRepeatingEventStep =
-        self.hasRepeatStepKeyword() && self.isPrecededByEventStep();
+          self.hasRepeatStepKeyword() && self.isPrecededByEventStep();
       return isRepeatingEventStep;
     },
 
     hasRepeatStepKeyword: function hasRepeatStepKeyword() {
       var hasRepeatStepKeyword =
-        keyword == Step.AND_STEP_KEYWORD || keyword == Step.BUT_STEP_KEYWORD || keyword == Step.STAR_STEP_KEYWORD;
+          keyword == Step.AND_STEP_KEYWORD || keyword == Step.BUT_STEP_KEYWORD || keyword == Step.STAR_STEP_KEYWORD;
       return hasRepeatStepKeyword;
     },
 
@@ -5862,20 +6354,17 @@ module.exports = Tag;
 
 });
 
-require.define("/node_modules/underscore",function(require,module,exports,__dirname,__filename,process){//     Underscore.js 1.3.3
-//     (c) 2009-2012 Jeremy Ashkenas, DocumentCloud Inc.
-//     Underscore is freely distributable under the MIT license.
-//     Portions of Underscore are inspired or borrowed from Prototype,
-//     Oliver Steele's Functional, and John Resig's Micro-Templating.
-//     For all details and documentation:
-//     http://documentcloud.github.com/underscore
+require.define("/node_modules/underscore",function(require,module,exports,__dirname,__filename,process){//     Underscore.js 1.5.2
+//     http://underscorejs.org
+//     (c) 2009-2013 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors
+//     Underscore may be freely distributed under the MIT license.
 
 (function() {
 
   // Baseline setup
   // --------------
 
-  // Establish the root object, `window` in the browser, or `global` on the server.
+  // Establish the root object, `window` in the browser, or `exports` on the server.
   var root = this;
 
   // Save the previous value of the `_` variable.
@@ -5888,10 +6377,12 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   var ArrayProto = Array.prototype, ObjProto = Object.prototype, FuncProto = Function.prototype;
 
   // Create quick reference variables for speed access to core prototypes.
-  var slice            = ArrayProto.slice,
-      unshift          = ArrayProto.unshift,
-      toString         = ObjProto.toString,
-      hasOwnProperty   = ObjProto.hasOwnProperty;
+  var
+    push             = ArrayProto.push,
+    slice            = ArrayProto.slice,
+    concat           = ArrayProto.concat,
+    toString         = ObjProto.toString,
+    hasOwnProperty   = ObjProto.hasOwnProperty;
 
   // All **ECMAScript 5** native function implementations that we hope to use
   // are declared here.
@@ -5910,7 +6401,11 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     nativeBind         = FuncProto.bind;
 
   // Create a safe reference to the Underscore object for use below.
-  var _ = function(obj) { return new wrapper(obj); };
+  var _ = function(obj) {
+    if (obj instanceof _) return obj;
+    if (!(this instanceof _)) return new _(obj);
+    this._wrapped = obj;
+  };
 
   // Export the Underscore object for **Node.js**, with
   // backwards-compatibility for the old `require()` API. If we're in
@@ -5922,11 +6417,11 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     }
     exports._ = _;
   } else {
-    root['_'] = _;
+    root._ = _;
   }
 
   // Current version.
-  _.VERSION = '1.3.3';
+  _.VERSION = '1.5.2';
 
   // Collection Functions
   // --------------------
@@ -5939,14 +6434,13 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     if (nativeForEach && obj.forEach === nativeForEach) {
       obj.forEach(iterator, context);
     } else if (obj.length === +obj.length) {
-      for (var i = 0, l = obj.length; i < l; i++) {
-        if (i in obj && iterator.call(context, obj[i], i, obj) === breaker) return;
+      for (var i = 0, length = obj.length; i < length; i++) {
+        if (iterator.call(context, obj[i], i, obj) === breaker) return;
       }
     } else {
-      for (var key in obj) {
-        if (_.has(obj, key)) {
-          if (iterator.call(context, obj[key], key, obj) === breaker) return;
-        }
+      var keys = _.keys(obj);
+      for (var i = 0, length = keys.length; i < length; i++) {
+        if (iterator.call(context, obj[keys[i]], keys[i], obj) === breaker) return;
       }
     }
   };
@@ -5958,11 +6452,12 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     if (obj == null) return results;
     if (nativeMap && obj.map === nativeMap) return obj.map(iterator, context);
     each(obj, function(value, index, list) {
-      results[results.length] = iterator.call(context, value, index, list);
+      results.push(iterator.call(context, value, index, list));
     });
-    if (obj.length === +obj.length) results.length = obj.length;
     return results;
   };
+
+  var reduceError = 'Reduce of empty array with no initial value';
 
   // **Reduce** builds up a single result from a list of values, aka `inject`,
   // or `foldl`. Delegates to **ECMAScript 5**'s native `reduce` if available.
@@ -5981,7 +6476,7 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
         memo = iterator.call(context, memo, value, index, list);
       }
     });
-    if (!initial) throw new TypeError('Reduce of empty array with no initial value');
+    if (!initial) throw new TypeError(reduceError);
     return memo;
   };
 
@@ -5994,9 +6489,22 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
       if (context) iterator = _.bind(iterator, context);
       return initial ? obj.reduceRight(iterator, memo) : obj.reduceRight(iterator);
     }
-    var reversed = _.toArray(obj).reverse();
-    if (context && !initial) iterator = _.bind(iterator, context);
-    return initial ? _.reduce(reversed, iterator, memo, context) : _.reduce(reversed, iterator);
+    var length = obj.length;
+    if (length !== +length) {
+      var keys = _.keys(obj);
+      length = keys.length;
+    }
+    each(obj, function(value, index, list) {
+      index = keys ? keys[--length] : --length;
+      if (!initial) {
+        memo = obj[index];
+        initial = true;
+      } else {
+        memo = iterator.call(context, memo, obj[index], index, list);
+      }
+    });
+    if (!initial) throw new TypeError(reduceError);
+    return memo;
   };
 
   // Return the first value which passes a truth test. Aliased as `detect`.
@@ -6019,25 +6527,23 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     if (obj == null) return results;
     if (nativeFilter && obj.filter === nativeFilter) return obj.filter(iterator, context);
     each(obj, function(value, index, list) {
-      if (iterator.call(context, value, index, list)) results[results.length] = value;
+      if (iterator.call(context, value, index, list)) results.push(value);
     });
     return results;
   };
 
   // Return all the elements for which a truth test fails.
   _.reject = function(obj, iterator, context) {
-    var results = [];
-    if (obj == null) return results;
-    each(obj, function(value, index, list) {
-      if (!iterator.call(context, value, index, list)) results[results.length] = value;
-    });
-    return results;
+    return _.filter(obj, function(value, index, list) {
+      return !iterator.call(context, value, index, list);
+    }, context);
   };
 
   // Determine whether all of the elements match a truth test.
   // Delegates to **ECMAScript 5**'s native `every` if available.
   // Aliased as `all`.
   _.every = _.all = function(obj, iterator, context) {
+    iterator || (iterator = _.identity);
     var result = true;
     if (obj == null) return result;
     if (nativeEvery && obj.every === nativeEvery) return obj.every(iterator, context);
@@ -6061,23 +6567,22 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     return !!result;
   };
 
-  // Determine if a given value is included in the array or object using `===`.
-  // Aliased as `contains`.
-  _.include = _.contains = function(obj, target) {
-    var found = false;
-    if (obj == null) return found;
+  // Determine if the array or object contains a given value (using `===`).
+  // Aliased as `include`.
+  _.contains = _.include = function(obj, target) {
+    if (obj == null) return false;
     if (nativeIndexOf && obj.indexOf === nativeIndexOf) return obj.indexOf(target) != -1;
-    found = any(obj, function(value) {
+    return any(obj, function(value) {
       return value === target;
     });
-    return found;
   };
 
   // Invoke a method (with arguments) on every item in a collection.
   _.invoke = function(obj, method) {
     var args = slice.call(arguments, 2);
+    var isFunc = _.isFunction(method);
     return _.map(obj, function(value) {
-      return (_.isFunction(method) ? method || value : value[method]).apply(value, args);
+      return (isFunc ? method : value[method]).apply(value, args);
     });
   };
 
@@ -6086,23 +6591,47 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     return _.map(obj, function(value){ return value[key]; });
   };
 
+  // Convenience version of a common use case of `filter`: selecting only objects
+  // containing specific `key:value` pairs.
+  _.where = function(obj, attrs, first) {
+    if (_.isEmpty(attrs)) return first ? void 0 : [];
+    return _[first ? 'find' : 'filter'](obj, function(value) {
+      for (var key in attrs) {
+        if (attrs[key] !== value[key]) return false;
+      }
+      return true;
+    });
+  };
+
+  // Convenience version of a common use case of `find`: getting the first object
+  // containing specific `key:value` pairs.
+  _.findWhere = function(obj, attrs) {
+    return _.where(obj, attrs, true);
+  };
+
   // Return the maximum element or (element-based computation).
+  // Can't optimize arrays of integers longer than 65,535 elements.
+  // See [WebKit Bug 80797](https://bugs.webkit.org/show_bug.cgi?id=80797)
   _.max = function(obj, iterator, context) {
-    if (!iterator && _.isArray(obj) && obj[0] === +obj[0]) return Math.max.apply(Math, obj);
+    if (!iterator && _.isArray(obj) && obj[0] === +obj[0] && obj.length < 65535) {
+      return Math.max.apply(Math, obj);
+    }
     if (!iterator && _.isEmpty(obj)) return -Infinity;
-    var result = {computed : -Infinity};
+    var result = {computed : -Infinity, value: -Infinity};
     each(obj, function(value, index, list) {
       var computed = iterator ? iterator.call(context, value, index, list) : value;
-      computed >= result.computed && (result = {value : value, computed : computed});
+      computed > result.computed && (result = {value : value, computed : computed});
     });
     return result.value;
   };
 
   // Return the minimum element (or element-based computation).
   _.min = function(obj, iterator, context) {
-    if (!iterator && _.isArray(obj) && obj[0] === +obj[0]) return Math.min.apply(Math, obj);
+    if (!iterator && _.isArray(obj) && obj[0] === +obj[0] && obj.length < 65535) {
+      return Math.min.apply(Math, obj);
+    }
     if (!iterator && _.isEmpty(obj)) return Infinity;
-    var result = {computed : Infinity};
+    var result = {computed : Infinity, value: Infinity};
     each(obj, function(value, index, list) {
       var computed = iterator ? iterator.call(context, value, index, list) : value;
       computed < result.computed && (result = {value : value, computed : computed});
@@ -6110,69 +6639,112 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     return result.value;
   };
 
-  // Shuffle an array.
+  // Shuffle an array, using the modern version of the 
+  // [Fisher-Yates shuffle](http://en.wikipedia.org/wiki/Fisherâ€“Yates_shuffle).
   _.shuffle = function(obj) {
-    var shuffled = [], rand;
-    each(obj, function(value, index, list) {
-      rand = Math.floor(Math.random() * (index + 1));
-      shuffled[index] = shuffled[rand];
+    var rand;
+    var index = 0;
+    var shuffled = [];
+    each(obj, function(value) {
+      rand = _.random(index++);
+      shuffled[index - 1] = shuffled[rand];
       shuffled[rand] = value;
     });
     return shuffled;
   };
 
+  // Sample **n** random values from an array.
+  // If **n** is not specified, returns a single random element from the array.
+  // The internal `guard` argument allows it to work with `map`.
+  _.sample = function(obj, n, guard) {
+    if (arguments.length < 2 || guard) {
+      return obj[_.random(obj.length - 1)];
+    }
+    return _.shuffle(obj).slice(0, Math.max(0, n));
+  };
+
+  // An internal function to generate lookup iterators.
+  var lookupIterator = function(value) {
+    return _.isFunction(value) ? value : function(obj){ return obj[value]; };
+  };
+
   // Sort the object's values by a criterion produced by an iterator.
-  _.sortBy = function(obj, val, context) {
-    var iterator = _.isFunction(val) ? val : function(obj) { return obj[val]; };
+  _.sortBy = function(obj, value, context) {
+    var iterator = lookupIterator(value);
     return _.pluck(_.map(obj, function(value, index, list) {
       return {
-        value : value,
-        criteria : iterator.call(context, value, index, list)
+        value: value,
+        index: index,
+        criteria: iterator.call(context, value, index, list)
       };
     }).sort(function(left, right) {
-      var a = left.criteria, b = right.criteria;
-      if (a === void 0) return 1;
-      if (b === void 0) return -1;
-      return a < b ? -1 : a > b ? 1 : 0;
+      var a = left.criteria;
+      var b = right.criteria;
+      if (a !== b) {
+        if (a > b || a === void 0) return 1;
+        if (a < b || b === void 0) return -1;
+      }
+      return left.index - right.index;
     }), 'value');
+  };
+
+  // An internal function used for aggregate "group by" operations.
+  var group = function(behavior) {
+    return function(obj, value, context) {
+      var result = {};
+      var iterator = value == null ? _.identity : lookupIterator(value);
+      each(obj, function(value, index) {
+        var key = iterator.call(context, value, index, obj);
+        behavior(result, key, value);
+      });
+      return result;
+    };
   };
 
   // Groups the object's values by a criterion. Pass either a string attribute
   // to group by, or a function that returns the criterion.
-  _.groupBy = function(obj, val) {
-    var result = {};
-    var iterator = _.isFunction(val) ? val : function(obj) { return obj[val]; };
-    each(obj, function(value, index) {
-      var key = iterator(value, index);
-      (result[key] || (result[key] = [])).push(value);
-    });
-    return result;
-  };
+  _.groupBy = group(function(result, key, value) {
+    (_.has(result, key) ? result[key] : (result[key] = [])).push(value);
+  });
 
-  // Use a comparator function to figure out at what index an object should
-  // be inserted so as to maintain order. Uses binary search.
-  _.sortedIndex = function(array, obj, iterator) {
-    iterator || (iterator = _.identity);
+  // Indexes the object's values by a criterion, similar to `groupBy`, but for
+  // when you know that your index values will be unique.
+  _.indexBy = group(function(result, key, value) {
+    result[key] = value;
+  });
+
+  // Counts instances of an object that group by a certain criterion. Pass
+  // either a string attribute to count by, or a function that returns the
+  // criterion.
+  _.countBy = group(function(result, key) {
+    _.has(result, key) ? result[key]++ : result[key] = 1;
+  });
+
+  // Use a comparator function to figure out the smallest index at which
+  // an object should be inserted so as to maintain order. Uses binary search.
+  _.sortedIndex = function(array, obj, iterator, context) {
+    iterator = iterator == null ? _.identity : lookupIterator(iterator);
+    var value = iterator.call(context, obj);
     var low = 0, high = array.length;
     while (low < high) {
-      var mid = (low + high) >> 1;
-      iterator(array[mid]) < iterator(obj) ? low = mid + 1 : high = mid;
+      var mid = (low + high) >>> 1;
+      iterator.call(context, array[mid]) < value ? low = mid + 1 : high = mid;
     }
     return low;
   };
 
-  // Safely convert anything iterable into a real, live array.
+  // Safely create a real, live array from anything iterable.
   _.toArray = function(obj) {
-    if (!obj)                                     return [];
-    if (_.isArray(obj))                           return slice.call(obj);
-    if (_.isArguments(obj))                       return slice.call(obj);
-    if (obj.toArray && _.isFunction(obj.toArray)) return obj.toArray();
+    if (!obj) return [];
+    if (_.isArray(obj)) return slice.call(obj);
+    if (obj.length === +obj.length) return _.map(obj, _.identity);
     return _.values(obj);
   };
 
   // Return the number of elements in an object.
   _.size = function(obj) {
-    return _.isArray(obj) ? obj.length : _.keys(obj).length;
+    if (obj == null) return 0;
+    return (obj.length === +obj.length) ? obj.length : _.keys(obj).length;
   };
 
   // Array Functions
@@ -6182,10 +6754,11 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // values in the array. Aliased as `head` and `take`. The **guard** check
   // allows it to work with `_.map`.
   _.first = _.head = _.take = function(array, n, guard) {
-    return (n != null) && !guard ? slice.call(array, 0, n) : array[0];
+    if (array == null) return void 0;
+    return (n == null) || guard ? array[0] : slice.call(array, 0, n);
   };
 
-  // Returns everything but the last entry of the array. Especcialy useful on
+  // Returns everything but the last entry of the array. Especially useful on
   // the arguments object. Passing **n** will return all the values in
   // the array, excluding the last N. The **guard** check allows it to work with
   // `_.map`.
@@ -6196,33 +6769,45 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // Get the last element of an array. Passing **n** will return the last N
   // values in the array. The **guard** check allows it to work with `_.map`.
   _.last = function(array, n, guard) {
-    if ((n != null) && !guard) {
-      return slice.call(array, Math.max(array.length - n, 0));
-    } else {
+    if (array == null) return void 0;
+    if ((n == null) || guard) {
       return array[array.length - 1];
+    } else {
+      return slice.call(array, Math.max(array.length - n, 0));
     }
   };
 
-  // Returns everything but the first entry of the array. Aliased as `tail`.
-  // Especially useful on the arguments object. Passing an **index** will return
-  // the rest of the values in the array from that index onward. The **guard**
+  // Returns everything but the first entry of the array. Aliased as `tail` and `drop`.
+  // Especially useful on the arguments object. Passing an **n** will return
+  // the rest N values in the array. The **guard**
   // check allows it to work with `_.map`.
-  _.rest = _.tail = function(array, index, guard) {
-    return slice.call(array, (index == null) || guard ? 1 : index);
+  _.rest = _.tail = _.drop = function(array, n, guard) {
+    return slice.call(array, (n == null) || guard ? 1 : n);
   };
 
   // Trim out all falsy values from an array.
   _.compact = function(array) {
-    return _.filter(array, function(value){ return !!value; });
+    return _.filter(array, _.identity);
   };
 
-  // Return a completely flattened version of an array.
+  // Internal implementation of a recursive `flatten` function.
+  var flatten = function(input, shallow, output) {
+    if (shallow && _.every(input, _.isArray)) {
+      return concat.apply(output, input);
+    }
+    each(input, function(value) {
+      if (_.isArray(value) || _.isArguments(value)) {
+        shallow ? push.apply(output, value) : flatten(value, shallow, output);
+      } else {
+        output.push(value);
+      }
+    });
+    return output;
+  };
+
+  // Flatten out an array, either recursively (by default), or just one level.
   _.flatten = function(array, shallow) {
-    return _.reduce(array, function(memo, value) {
-      if (_.isArray(value)) return memo.concat(shallow ? value : _.flatten(value));
-      memo[memo.length] = value;
-      return memo;
-    }, []);
+    return flatten(array, shallow, []);
   };
 
   // Return a version of the array that does not contain the specified value(s).
@@ -6233,18 +6818,21 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // Produce a duplicate-free version of the array. If the array has already
   // been sorted, you have the option of using a faster algorithm.
   // Aliased as `unique`.
-  _.uniq = _.unique = function(array, isSorted, iterator) {
-    var initial = iterator ? _.map(array, iterator) : array;
+  _.uniq = _.unique = function(array, isSorted, iterator, context) {
+    if (_.isFunction(isSorted)) {
+      context = iterator;
+      iterator = isSorted;
+      isSorted = false;
+    }
+    var initial = iterator ? _.map(array, iterator, context) : array;
     var results = [];
-    // The `isSorted` flag is irrelevant if the array only contains two elements.
-    if (array.length < 3) isSorted = true;
-    _.reduce(initial, function (memo, value, index) {
-      if (isSorted ? _.last(memo) !== value || !memo.length : !_.include(memo, value)) {
-        memo.push(value);
+    var seen = [];
+    each(initial, function(value, index) {
+      if (isSorted ? (!index || seen[seen.length - 1] !== value) : !_.contains(seen, value)) {
+        seen.push(value);
         results.push(array[index]);
       }
-      return memo;
-    }, []);
+    });
     return results;
   };
 
@@ -6255,8 +6843,8 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   };
 
   // Produce an array that contains every item shared between all the
-  // passed-in arrays. (Aliased as "intersect" for back-compat.)
-  _.intersection = _.intersect = function(array) {
+  // passed-in arrays.
+  _.intersection = function(array) {
     var rest = slice.call(arguments, 1);
     return _.filter(_.uniq(array), function(item) {
       return _.every(rest, function(other) {
@@ -6268,18 +6856,35 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // Take the difference between one array and a number of other arrays.
   // Only the elements present in just the first array will remain.
   _.difference = function(array) {
-    var rest = _.flatten(slice.call(arguments, 1), true);
-    return _.filter(array, function(value){ return !_.include(rest, value); });
+    var rest = concat.apply(ArrayProto, slice.call(arguments, 1));
+    return _.filter(array, function(value){ return !_.contains(rest, value); });
   };
 
   // Zip together multiple lists into a single array -- elements that share
   // an index go together.
   _.zip = function() {
-    var args = slice.call(arguments);
-    var length = _.max(_.pluck(args, 'length'));
+    var length = _.max(_.pluck(arguments, "length").concat(0));
     var results = new Array(length);
-    for (var i = 0; i < length; i++) results[i] = _.pluck(args, "" + i);
+    for (var i = 0; i < length; i++) {
+      results[i] = _.pluck(arguments, '' + i);
+    }
     return results;
+  };
+
+  // Converts lists into objects. Pass either a single array of `[key, value]`
+  // pairs, or two parallel arrays of the same length -- one of keys, and one of
+  // the corresponding values.
+  _.object = function(list, values) {
+    if (list == null) return {};
+    var result = {};
+    for (var i = 0, length = list.length; i < length; i++) {
+      if (values) {
+        result[list[i]] = values[i];
+      } else {
+        result[list[i][0]] = list[i][1];
+      }
+    }
+    return result;
   };
 
   // If the browser doesn't supply us with indexOf (I'm looking at you, **MSIE**),
@@ -6290,22 +6895,29 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // for **isSorted** to use binary search.
   _.indexOf = function(array, item, isSorted) {
     if (array == null) return -1;
-    var i, l;
+    var i = 0, length = array.length;
     if (isSorted) {
-      i = _.sortedIndex(array, item);
-      return array[i] === item ? i : -1;
+      if (typeof isSorted == 'number') {
+        i = (isSorted < 0 ? Math.max(0, length + isSorted) : isSorted);
+      } else {
+        i = _.sortedIndex(array, item);
+        return array[i] === item ? i : -1;
+      }
     }
-    if (nativeIndexOf && array.indexOf === nativeIndexOf) return array.indexOf(item);
-    for (i = 0, l = array.length; i < l; i++) if (i in array && array[i] === item) return i;
+    if (nativeIndexOf && array.indexOf === nativeIndexOf) return array.indexOf(item, isSorted);
+    for (; i < length; i++) if (array[i] === item) return i;
     return -1;
   };
 
   // Delegates to **ECMAScript 5**'s native `lastIndexOf` if available.
-  _.lastIndexOf = function(array, item) {
+  _.lastIndexOf = function(array, item, from) {
     if (array == null) return -1;
-    if (nativeLastIndexOf && array.lastIndexOf === nativeLastIndexOf) return array.lastIndexOf(item);
-    var i = array.length;
-    while (i--) if (i in array && array[i] === item) return i;
+    var hasIndex = from != null;
+    if (nativeLastIndexOf && array.lastIndexOf === nativeLastIndexOf) {
+      return hasIndex ? array.lastIndexOf(item, from) : array.lastIndexOf(item);
+    }
+    var i = (hasIndex ? from : array.length);
+    while (i--) if (array[i] === item) return i;
     return -1;
   };
 
@@ -6319,11 +6931,11 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     }
     step = arguments[2] || 1;
 
-    var len = Math.max(Math.ceil((stop - start) / step), 0);
+    var length = Math.max(Math.ceil((stop - start) / step), 0);
     var idx = 0;
-    var range = new Array(len);
+    var range = new Array(length);
 
-    while(idx < len) {
+    while(idx < length) {
       range[idx++] = start;
       start += step;
     }
@@ -6338,21 +6950,30 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   var ctor = function(){};
 
   // Create a function bound to a given object (assigning `this`, and arguments,
-  // optionally). Binding with arguments is also known as `curry`.
-  // Delegates to **ECMAScript 5**'s native `Function.bind` if available.
-  // We check for `func.bind` first, to fail fast when `func` is undefined.
-  _.bind = function bind(func, context) {
-    var bound, args;
-    if (func.bind === nativeBind && nativeBind) return nativeBind.apply(func, slice.call(arguments, 1));
+  // optionally). Delegates to **ECMAScript 5**'s native `Function.bind` if
+  // available.
+  _.bind = function(func, context) {
+    var args, bound;
+    if (nativeBind && func.bind === nativeBind) return nativeBind.apply(func, slice.call(arguments, 1));
     if (!_.isFunction(func)) throw new TypeError;
     args = slice.call(arguments, 2);
     return bound = function() {
       if (!(this instanceof bound)) return func.apply(context, args.concat(slice.call(arguments)));
       ctor.prototype = func.prototype;
       var self = new ctor;
+      ctor.prototype = null;
       var result = func.apply(self, args.concat(slice.call(arguments)));
       if (Object(result) === result) return result;
       return self;
+    };
+  };
+
+  // Partially apply a function by creating a version that has had some of its
+  // arguments pre-filled, without changing its dynamic `this` context.
+  _.partial = function(func) {
+    var args = slice.call(arguments, 1);
+    return function() {
+      return func.apply(this, args.concat(slice.call(arguments)));
     };
   };
 
@@ -6360,7 +6981,7 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // all callbacks defined on an object belong to it.
   _.bindAll = function(obj) {
     var funcs = slice.call(arguments, 1);
-    if (funcs.length == 0) funcs = _.functions(obj);
+    if (funcs.length === 0) throw new Error("bindAll must be passed function names");
     each(funcs, function(f) { obj[f] = _.bind(obj[f], obj); });
     return obj;
   };
@@ -6389,25 +7010,34 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   };
 
   // Returns a function, that, when invoked, will only be triggered at most once
-  // during a given window of time.
-  _.throttle = function(func, wait) {
-    var context, args, timeout, throttling, more, result;
-    var whenDone = _.debounce(function(){ more = throttling = false; }, wait);
+  // during a given window of time. Normally, the throttled function will run
+  // as much as it can, without ever going more than once per `wait` duration;
+  // but if you'd like to disable the execution on the leading edge, pass
+  // `{leading: false}`. To disable execution on the trailing edge, ditto.
+  _.throttle = function(func, wait, options) {
+    var context, args, result;
+    var timeout = null;
+    var previous = 0;
+    options || (options = {});
+    var later = function() {
+      previous = options.leading === false ? 0 : new Date;
+      timeout = null;
+      result = func.apply(context, args);
+    };
     return function() {
-      context = this; args = arguments;
-      var later = function() {
+      var now = new Date;
+      if (!previous && options.leading === false) previous = now;
+      var remaining = wait - (now - previous);
+      context = this;
+      args = arguments;
+      if (remaining <= 0) {
+        clearTimeout(timeout);
         timeout = null;
-        if (more) func.apply(context, args);
-        whenDone();
-      };
-      if (!timeout) timeout = setTimeout(later, wait);
-      if (throttling) {
-        more = true;
-      } else {
+        previous = now;
         result = func.apply(context, args);
+      } else if (!timeout && options.trailing !== false) {
+        timeout = setTimeout(later, remaining);
       }
-      whenDone();
-      throttling = true;
       return result;
     };
   };
@@ -6417,16 +7047,26 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // N milliseconds. If `immediate` is passed, trigger the function on the
   // leading edge, instead of the trailing.
   _.debounce = function(func, wait, immediate) {
-    var timeout;
+    var timeout, args, context, timestamp, result;
     return function() {
-      var context = this, args = arguments;
+      context = this;
+      args = arguments;
+      timestamp = new Date();
       var later = function() {
-        timeout = null;
-        if (!immediate) func.apply(context, args);
+        var last = (new Date()) - timestamp;
+        if (last < wait) {
+          timeout = setTimeout(later, wait - last);
+        } else {
+          timeout = null;
+          if (!immediate) result = func.apply(context, args);
+        }
       };
-      if (immediate && !timeout) func.apply(context, args);
-      clearTimeout(timeout);
-      timeout = setTimeout(later, wait);
+      var callNow = immediate && !timeout;
+      if (!timeout) {
+        timeout = setTimeout(later, wait);
+      }
+      if (callNow) result = func.apply(context, args);
+      return result;
     };
   };
 
@@ -6437,7 +7077,9 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     return function() {
       if (ran) return memo;
       ran = true;
-      return memo = func.apply(this, arguments);
+      memo = func.apply(this, arguments);
+      func = null;
+      return memo;
     };
   };
 
@@ -6446,7 +7088,8 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // conditionally execute the original function.
   _.wrap = function(func, wrapper) {
     return function() {
-      var args = [func].concat(slice.call(arguments, 0));
+      var args = [func];
+      push.apply(args, arguments);
       return wrapper.apply(this, args);
     };
   };
@@ -6466,9 +7109,10 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
 
   // Returns a function that will only be executed after being called N times.
   _.after = function(times, func) {
-    if (times <= 0) return func();
     return function() {
-      if (--times < 1) { return func.apply(this, arguments); }
+      if (--times < 1) {
+        return func.apply(this, arguments);
+      }
     };
   };
 
@@ -6480,13 +7124,40 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   _.keys = nativeKeys || function(obj) {
     if (obj !== Object(obj)) throw new TypeError('Invalid object');
     var keys = [];
-    for (var key in obj) if (_.has(obj, key)) keys[keys.length] = key;
+    for (var key in obj) if (_.has(obj, key)) keys.push(key);
     return keys;
   };
 
   // Retrieve the values of an object's properties.
   _.values = function(obj) {
-    return _.map(obj, _.identity);
+    var keys = _.keys(obj);
+    var length = keys.length;
+    var values = new Array(length);
+    for (var i = 0; i < length; i++) {
+      values[i] = obj[keys[i]];
+    }
+    return values;
+  };
+
+  // Convert an object into a list of `[key, value]` pairs.
+  _.pairs = function(obj) {
+    var keys = _.keys(obj);
+    var length = keys.length;
+    var pairs = new Array(length);
+    for (var i = 0; i < length; i++) {
+      pairs[i] = [keys[i], obj[keys[i]]];
+    }
+    return pairs;
+  };
+
+  // Invert the keys and values of an object. The values must be serializable.
+  _.invert = function(obj) {
+    var result = {};
+    var keys = _.keys(obj);
+    for (var i = 0, length = keys.length; i < length; i++) {
+      result[obj[keys[i]]] = keys[i];
+    }
+    return result;
   };
 
   // Return a sorted list of the function names available on the object.
@@ -6502,8 +7173,10 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // Extend a given object with all the properties in passed-in object(s).
   _.extend = function(obj) {
     each(slice.call(arguments, 1), function(source) {
-      for (var prop in source) {
-        obj[prop] = source[prop];
+      if (source) {
+        for (var prop in source) {
+          obj[prop] = source[prop];
+        }
       }
     });
     return obj;
@@ -6511,18 +7184,31 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
 
   // Return a copy of the object only containing the whitelisted properties.
   _.pick = function(obj) {
-    var result = {};
-    each(_.flatten(slice.call(arguments, 1)), function(key) {
-      if (key in obj) result[key] = obj[key];
+    var copy = {};
+    var keys = concat.apply(ArrayProto, slice.call(arguments, 1));
+    each(keys, function(key) {
+      if (key in obj) copy[key] = obj[key];
     });
-    return result;
+    return copy;
+  };
+
+   // Return a copy of the object without the blacklisted properties.
+  _.omit = function(obj) {
+    var copy = {};
+    var keys = concat.apply(ArrayProto, slice.call(arguments, 1));
+    for (var key in obj) {
+      if (!_.contains(keys, key)) copy[key] = obj[key];
+    }
+    return copy;
   };
 
   // Fill in a given object with default properties.
   _.defaults = function(obj) {
     each(slice.call(arguments, 1), function(source) {
-      for (var prop in source) {
-        if (obj[prop] == null) obj[prop] = source[prop];
+      if (source) {
+        for (var prop in source) {
+          if (obj[prop] === void 0) obj[prop] = source[prop];
+        }
       }
     });
     return obj;
@@ -6542,19 +7228,16 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     return obj;
   };
 
-  // Internal recursive comparison function.
-  function eq(a, b, stack) {
+  // Internal recursive comparison function for `isEqual`.
+  var eq = function(a, b, aStack, bStack) {
     // Identical objects are equal. `0 === -0`, but they aren't identical.
-    // See the Harmony `egal` proposal: http://wiki.ecmascript.org/doku.php?id=harmony:egal.
+    // See the [Harmony `egal` proposal](http://wiki.ecmascript.org/doku.php?id=harmony:egal).
     if (a === b) return a !== 0 || 1 / a == 1 / b;
     // A strict comparison is necessary because `null == undefined`.
     if (a == null || b == null) return a === b;
     // Unwrap any wrapped objects.
-    if (a._chain) a = a._wrapped;
-    if (b._chain) b = b._wrapped;
-    // Invoke a custom `isEqual` method if one is provided.
-    if (a.isEqual && _.isFunction(a.isEqual)) return a.isEqual(b);
-    if (b.isEqual && _.isFunction(b.isEqual)) return b.isEqual(a);
+    if (a instanceof _) a = a._wrapped;
+    if (b instanceof _) b = b._wrapped;
     // Compare `[[Class]]` names.
     var className = toString.call(a);
     if (className != toString.call(b)) return false;
@@ -6584,14 +7267,22 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     if (typeof a != 'object' || typeof b != 'object') return false;
     // Assume equality for cyclic structures. The algorithm for detecting cyclic
     // structures is adapted from ES 5.1 section 15.12.3, abstract operation `JO`.
-    var length = stack.length;
+    var length = aStack.length;
     while (length--) {
       // Linear search. Performance is inversely proportional to the number of
       // unique nested structures.
-      if (stack[length] == a) return true;
+      if (aStack[length] == a) return bStack[length] == b;
+    }
+    // Objects with different constructors are not equivalent, but `Object`s
+    // from different frames are.
+    var aCtor = a.constructor, bCtor = b.constructor;
+    if (aCtor !== bCtor && !(_.isFunction(aCtor) && (aCtor instanceof aCtor) &&
+                             _.isFunction(bCtor) && (bCtor instanceof bCtor))) {
+      return false;
     }
     // Add the first object to the stack of traversed objects.
-    stack.push(a);
+    aStack.push(a);
+    bStack.push(b);
     var size = 0, result = true;
     // Recursively compare objects and arrays.
     if (className == '[object Array]') {
@@ -6601,20 +7292,17 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
       if (result) {
         // Deep compare the contents, ignoring non-numeric properties.
         while (size--) {
-          // Ensure commutative equality for sparse arrays.
-          if (!(result = size in a == size in b && eq(a[size], b[size], stack))) break;
+          if (!(result = eq(a[size], b[size], aStack, bStack))) break;
         }
       }
     } else {
-      // Objects with different constructors are not equivalent.
-      if ('constructor' in a != 'constructor' in b || a.constructor != b.constructor) return false;
       // Deep compare objects.
       for (var key in a) {
         if (_.has(a, key)) {
           // Count the expected number of properties.
           size++;
           // Deep compare each member.
-          if (!(result = _.has(b, key) && eq(a[key], b[key], stack))) break;
+          if (!(result = _.has(b, key) && eq(a[key], b[key], aStack, bStack))) break;
         }
       }
       // Ensure that both objects contain the same number of properties.
@@ -6626,13 +7314,14 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
       }
     }
     // Remove the first object from the stack of traversed objects.
-    stack.pop();
+    aStack.pop();
+    bStack.pop();
     return result;
-  }
+  };
 
   // Perform a deep comparison to check if two objects are equal.
   _.isEqual = function(a, b) {
-    return eq(a, b, []);
+    return eq(a, b, [], []);
   };
 
   // Is a given array, string, or object empty?
@@ -6646,7 +7335,7 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
 
   // Is a given value a DOM element?
   _.isElement = function(obj) {
-    return !!(obj && obj.nodeType == 1);
+    return !!(obj && obj.nodeType === 1);
   };
 
   // Is a given value an array?
@@ -6660,55 +7349,41 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     return obj === Object(obj);
   };
 
-  // Is a given variable an arguments object?
-  _.isArguments = function(obj) {
-    return toString.call(obj) == '[object Arguments]';
-  };
+  // Add some isType methods: isArguments, isFunction, isString, isNumber, isDate, isRegExp.
+  each(['Arguments', 'Function', 'String', 'Number', 'Date', 'RegExp'], function(name) {
+    _['is' + name] = function(obj) {
+      return toString.call(obj) == '[object ' + name + ']';
+    };
+  });
+
+  // Define a fallback version of the method in browsers (ahem, IE), where
+  // there isn't any inspectable "Arguments" type.
   if (!_.isArguments(arguments)) {
     _.isArguments = function(obj) {
       return !!(obj && _.has(obj, 'callee'));
     };
   }
 
-  // Is a given value a function?
-  _.isFunction = function(obj) {
-    return toString.call(obj) == '[object Function]';
-  };
-
-  // Is a given value a string?
-  _.isString = function(obj) {
-    return toString.call(obj) == '[object String]';
-  };
-
-  // Is a given value a number?
-  _.isNumber = function(obj) {
-    return toString.call(obj) == '[object Number]';
-  };
+  // Optimize `isFunction` if appropriate.
+  if (typeof (/./) !== 'function') {
+    _.isFunction = function(obj) {
+      return typeof obj === 'function';
+    };
+  }
 
   // Is a given object a finite number?
   _.isFinite = function(obj) {
-    return _.isNumber(obj) && isFinite(obj);
+    return isFinite(obj) && !isNaN(parseFloat(obj));
   };
 
-  // Is the given value `NaN`?
+  // Is the given value `NaN`? (NaN is the only number which does not equal itself).
   _.isNaN = function(obj) {
-    // `NaN` is the only value for which `===` is not reflexive.
-    return obj !== obj;
+    return _.isNumber(obj) && obj != +obj;
   };
 
   // Is a given value a boolean?
   _.isBoolean = function(obj) {
     return obj === true || obj === false || toString.call(obj) == '[object Boolean]';
-  };
-
-  // Is a given value a date?
-  _.isDate = function(obj) {
-    return toString.call(obj) == '[object Date]';
-  };
-
-  // Is the given value a regular expression?
-  _.isRegExp = function(obj) {
-    return toString.call(obj) == '[object RegExp]';
   };
 
   // Is a given value equal to null?
@@ -6721,7 +7396,8 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     return obj === void 0;
   };
 
-  // Has own property?
+  // Shortcut function for checking if an object has a given property directly
+  // on itself (in other words, not on a prototype).
   _.has = function(obj, key) {
     return hasOwnProperty.call(obj, key);
   };
@@ -6742,28 +7418,66 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   };
 
   // Run a function **n** times.
-  _.times = function (n, iterator, context) {
-    for (var i = 0; i < n; i++) iterator.call(context, i);
+  _.times = function(n, iterator, context) {
+    var accum = Array(Math.max(0, n));
+    for (var i = 0; i < n; i++) accum[i] = iterator.call(context, i);
+    return accum;
   };
 
-  // Escape a string for HTML interpolation.
-  _.escape = function(string) {
-    return (''+string).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;').replace(/\//g,'&#x2F;');
+  // Return a random integer between min and max (inclusive).
+  _.random = function(min, max) {
+    if (max == null) {
+      max = min;
+      min = 0;
+    }
+    return min + Math.floor(Math.random() * (max - min + 1));
   };
 
-  // If the value of the named property is a function then invoke it;
-  // otherwise, return it.
+  // List of HTML entities for escaping.
+  var entityMap = {
+    escape: {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#x27;'
+    }
+  };
+  entityMap.unescape = _.invert(entityMap.escape);
+
+  // Regexes containing the keys and values listed immediately above.
+  var entityRegexes = {
+    escape:   new RegExp('[' + _.keys(entityMap.escape).join('') + ']', 'g'),
+    unescape: new RegExp('(' + _.keys(entityMap.unescape).join('|') + ')', 'g')
+  };
+
+  // Functions for escaping and unescaping strings to/from HTML interpolation.
+  _.each(['escape', 'unescape'], function(method) {
+    _[method] = function(string) {
+      if (string == null) return '';
+      return ('' + string).replace(entityRegexes[method], function(match) {
+        return entityMap[method][match];
+      });
+    };
+  });
+
+  // If the value of the named `property` is a function then invoke it with the
+  // `object` as context; otherwise, return it.
   _.result = function(object, property) {
-    if (object == null) return null;
+    if (object == null) return void 0;
     var value = object[property];
     return _.isFunction(value) ? value.call(object) : value;
   };
 
-  // Add your own custom functions to the Underscore object, ensuring that
-  // they're correctly added to the OOP wrapper as well.
+  // Add your own custom functions to the Underscore object.
   _.mixin = function(obj) {
-    each(_.functions(obj), function(name){
-      addToWrapper(name, _[name] = obj[name]);
+    each(_.functions(obj), function(name) {
+      var func = _[name] = obj[name];
+      _.prototype[name] = function() {
+        var args = [this._wrapped];
+        push.apply(args, arguments);
+        return result.call(this, func.apply(_, args));
+      };
     });
   };
 
@@ -6771,7 +7485,7 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // Useful for temporary DOM ids.
   var idCounter = 0;
   _.uniqueId = function(prefix) {
-    var id = idCounter++;
+    var id = ++idCounter + '';
     return prefix ? prefix + id : id;
   };
 
@@ -6786,72 +7500,78 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // When customizing `templateSettings`, if you don't want to define an
   // interpolation, evaluation or escaping regex, we need one that is
   // guaranteed not to match.
-  var noMatch = /.^/;
+  var noMatch = /(.)^/;
 
   // Certain characters need to be escaped so that they can be put into a
   // string literal.
   var escapes = {
-    '\\': '\\',
-    "'": "'",
-    'r': '\r',
-    'n': '\n',
-    't': '\t',
-    'u2028': '\u2028',
-    'u2029': '\u2029'
+    "'":      "'",
+    '\\':     '\\',
+    '\r':     'r',
+    '\n':     'n',
+    '\t':     't',
+    '\u2028': 'u2028',
+    '\u2029': 'u2029'
   };
 
-  for (var p in escapes) escapes[escapes[p]] = p;
   var escaper = /\\|'|\r|\n|\t|\u2028|\u2029/g;
-  var unescaper = /\\(\\|'|r|n|t|u2028|u2029)/g;
-
-  // Within an interpolation, evaluation, or escaping, remove HTML escaping
-  // that had been previously added.
-  var unescape = function(code) {
-    return code.replace(unescaper, function(match, escape) {
-      return escapes[escape];
-    });
-  };
 
   // JavaScript micro-templating, similar to John Resig's implementation.
   // Underscore templating handles arbitrary delimiters, preserves whitespace,
   // and correctly escapes quotes within interpolated code.
   _.template = function(text, data, settings) {
-    settings = _.defaults(settings || {}, _.templateSettings);
+    var render;
+    settings = _.defaults({}, settings, _.templateSettings);
 
-    // Compile the template source, taking care to escape characters that
-    // cannot be included in a string literal and then unescape them in code
-    // blocks.
-    var source = "__p+='" + text
-      .replace(escaper, function(match) {
-        return '\\' + escapes[match];
-      })
-      .replace(settings.escape || noMatch, function(match, code) {
-        return "'+\n_.escape(" + unescape(code) + ")+\n'";
-      })
-      .replace(settings.interpolate || noMatch, function(match, code) {
-        return "'+\n(" + unescape(code) + ")+\n'";
-      })
-      .replace(settings.evaluate || noMatch, function(match, code) {
-        return "';\n" + unescape(code) + "\n;__p+='";
-      }) + "';\n";
+    // Combine delimiters into one regular expression via alternation.
+    var matcher = new RegExp([
+      (settings.escape || noMatch).source,
+      (settings.interpolate || noMatch).source,
+      (settings.evaluate || noMatch).source
+    ].join('|') + '|$', 'g');
+
+    // Compile the template source, escaping string literals appropriately.
+    var index = 0;
+    var source = "__p+='";
+    text.replace(matcher, function(match, escape, interpolate, evaluate, offset) {
+      source += text.slice(index, offset)
+        .replace(escaper, function(match) { return '\\' + escapes[match]; });
+
+      if (escape) {
+        source += "'+\n((__t=(" + escape + "))==null?'':_.escape(__t))+\n'";
+      }
+      if (interpolate) {
+        source += "'+\n((__t=(" + interpolate + "))==null?'':__t)+\n'";
+      }
+      if (evaluate) {
+        source += "';\n" + evaluate + "\n__p+='";
+      }
+      index = offset + match.length;
+      return match;
+    });
+    source += "';\n";
 
     // If a variable is not specified, place data values in local scope.
     if (!settings.variable) source = 'with(obj||{}){\n' + source + '}\n';
 
-    source = "var __p='';" +
-      "var print=function(){__p+=Array.prototype.join.call(arguments, '')};\n" +
+    source = "var __t,__p='',__j=Array.prototype.join," +
+      "print=function(){__p+=__j.call(arguments,'');};\n" +
       source + "return __p;\n";
 
-    var render = new Function(settings.variable || 'obj', '_', source);
+    try {
+      render = new Function(settings.variable || 'obj', '_', source);
+    } catch (e) {
+      e.source = source;
+      throw e;
+    }
+
     if (data) return render(data, _);
     var template = function(data) {
       return render.call(this, data, _);
     };
 
-    // Provide the compiled function source as a convenience for build time
-    // precompilation.
-    template.source = 'function(' + (settings.variable || 'obj') + '){\n' +
-      source + '}';
+    // Provide the compiled function source as a convenience for precompilation.
+    template.source = 'function(' + (settings.variable || 'obj') + '){\n' + source + '}';
 
     return template;
   };
@@ -6861,29 +7581,15 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
     return _(obj).chain();
   };
 
-  // The OOP Wrapper
+  // OOP
   // ---------------
-
   // If Underscore is called as a function, it returns a wrapped object that
   // can be used OO-style. This wrapper holds altered versions of all the
   // underscore functions. Wrapped objects may be chained.
-  var wrapper = function(obj) { this._wrapped = obj; };
-
-  // Expose `wrapper.prototype` as `_.prototype`
-  _.prototype = wrapper.prototype;
 
   // Helper function to continue chaining intermediate results.
-  var result = function(obj, chain) {
-    return chain ? _(obj).chain() : obj;
-  };
-
-  // A method to easily add functions to the OOP wrapper.
-  var addToWrapper = function(name, func) {
-    wrapper.prototype[name] = function() {
-      var args = slice.call(arguments);
-      unshift.call(args, this._wrapped);
-      return result(func.apply(_, args), this._chain);
-    };
+  var result = function(obj) {
+    return this._chain ? _(obj).chain() : obj;
   };
 
   // Add all of the Underscore functions to the wrapper object.
@@ -6892,33 +7598,36 @@ require.define("/node_modules/underscore",function(require,module,exports,__dirn
   // Add all mutator Array functions to the wrapper.
   each(['pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'], function(name) {
     var method = ArrayProto[name];
-    wrapper.prototype[name] = function() {
-      var wrapped = this._wrapped;
-      method.apply(wrapped, arguments);
-      var length = wrapped.length;
-      if ((name == 'shift' || name == 'splice') && length === 0) delete wrapped[0];
-      return result(wrapped, this._chain);
+    _.prototype[name] = function() {
+      var obj = this._wrapped;
+      method.apply(obj, arguments);
+      if ((name == 'shift' || name == 'splice') && obj.length === 0) delete obj[0];
+      return result.call(this, obj);
     };
   });
 
   // Add all accessor Array functions to the wrapper.
   each(['concat', 'join', 'slice'], function(name) {
     var method = ArrayProto[name];
-    wrapper.prototype[name] = function() {
-      return result(method.apply(this._wrapped, arguments), this._chain);
+    _.prototype[name] = function() {
+      return result.call(this, method.apply(this._wrapped, arguments));
     };
   });
 
-  // Start chaining a wrapped Underscore object.
-  wrapper.prototype.chain = function() {
-    this._chain = true;
-    return this;
-  };
+  _.extend(_.prototype, {
 
-  // Extracts the result from a wrapped and chained object.
-  wrapper.prototype.value = function() {
-    return this._wrapped;
-  };
+    // Start chaining a wrapped Underscore object.
+    chain: function() {
+      this._chain = true;
+      return this;
+    },
+
+    // Extracts the result from a wrapped and chained object.
+    value: function() {
+      return this._wrapped;
+    }
+
+  });
 
 }).call(this);
 
@@ -6969,7 +7678,7 @@ Cucumber.Type                  = require('./cucumber/type');
 Cucumber.Util                  = require('./cucumber/util');
 Cucumber.VolatileConfiguration = require('./cucumber/volatile_configuration');
 
-Cucumber.VERSION               = "0.3.0";
+Cucumber.VERSION               = "0.4.0";
 
 module.exports                 = Cucumber;
 
@@ -6977,11 +7686,11 @@ module.exports                 = Cucumber;
 require("/cucumber");
 
 require.define("/node_modules/gherkin/lexer/en",function(require,module,exports,__dirname,__filename,process){
-/* line 1 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 1 "ragel/i18n/en.js.rl" */
 ;(function() {
 
 
-/* line 126 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 126 "ragel/i18n/en.js.rl" */
 
 
 
@@ -7716,19 +8425,21 @@ var lexer_error = 0;
 var lexer_en_main = 1;
 
 
-/* line 129 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 129 "ragel/i18n/en.js.rl" */
 
-/* line 130 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 130 "ragel/i18n/en.js.rl" */
 
-/* line 131 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 131 "ragel/i18n/en.js.rl" */
+
+/* line 132 "ragel/i18n/en.js.rl" */
 
 var Lexer = function(listener) {
   // Check that listener has the required functions
   var events = ['comment', 'tag', 'feature', 'background', 'scenario', 'scenario_outline', 'examples', 'step', 'doc_string', 'row', 'eof'];
-  for(e in events) {
-    var event = events[e];
+  for(var i=0, len=events.length; i<len; i++) {
+    var event = events[i];
     if(typeof listener[event] != 'function') {
-      throw "Error. No " + event + " function exists on " + JSON.stringify(listener);
+      throw new Error("Error. No " + event + " function exists on " + JSON.stringify(listener));
     }
   }
   this.listener = listener;
@@ -7750,16 +8461,17 @@ Lexer.prototype.scan = function(data) {
 
   this.line_number = 1;
   this.last_newline = 0;
+  var signedCharValue=function(v){return v > 127 ? v-256 : v; };
 
   
-/* line 778 "js/lib/gherkin/lexer/en.js" */
+/* line 781 "js/lib/gherkin/lexer/en.js" */
 {
 	  this.cs = lexer_start;
 } /* JSCodeGen::writeInit */
 
-/* line 162 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 164 "ragel/i18n/en.js.rl" */
   
-/* line 785 "js/lib/gherkin/lexer/en.js" */
+/* line 788 "js/lib/gherkin/lexer/en.js" */
 {
 	var _klen, _trans, _keys, _ps, _widec, _acts, _nacts;
 	var _goto_level, _resume, _eof_trans, _again, _test_eof;
@@ -7798,9 +8510,9 @@ Lexer.prototype.scan = function(data) {
 	        if (_upper < _lower) { break; }
 	        _mid = _lower + ( (_upper - _lower) >> 1 );
 
-	        if ( data[p] < _lexer_trans_keys[_mid]) {
+	        if (( signedCharValue(data[p])) < _lexer_trans_keys[_mid]) {
 	           _upper = _mid - 1;
-	        } else if ( data[p] > _lexer_trans_keys[_mid]) {
+	        } else if (( signedCharValue(data[p])) > _lexer_trans_keys[_mid]) {
 	           _lower = _mid + 1;
 	        } else {
 	           _trans += (_mid - _keys);
@@ -7819,9 +8531,9 @@ Lexer.prototype.scan = function(data) {
 	     while (true) {
 	        if (_upper < _lower) { break; }
 	        _mid = _lower + (((_upper-_lower) >> 1) & ~1);
-	        if ( data[p] < _lexer_trans_keys[_mid]) {
+	        if (( signedCharValue(data[p])) < _lexer_trans_keys[_mid]) {
 	          _upper = _mid - 2;
-	         } else if ( data[p] > _lexer_trans_keys[_mid+1]) {
+	         } else if (( signedCharValue(data[p])) > _lexer_trans_keys[_mid+1]) {
 	          _lower = _mid + 2;
 	        } else {
 	          _trans += ((_mid - _keys) >> 1);
@@ -7844,35 +8556,35 @@ Lexer.prototype.scan = function(data) {
 			_acts += 1;
 			switch (_lexer_actions[_acts - 1]) {
 case 0:
-/* line 6 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 6 "ragel/i18n/en.js.rl" */
 
     this.content_start = p;
     this.current_line = this.line_number;
     this.start_col = p - this.last_newline - (this.keyword+':').length;
   		break;
 case 1:
-/* line 12 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 12 "ragel/i18n/en.js.rl" */
 
     this.current_line = this.line_number;
     this.start_col = p - this.last_newline;
   		break;
 case 2:
-/* line 17 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 17 "ragel/i18n/en.js.rl" */
 
     this.content_start = p;
   		break;
 case 3:
-/* line 21 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 21 "ragel/i18n/en.js.rl" */
 
     this.docstring_content_type_start = p;
   		break;
 case 4:
-/* line 25 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 25 "ragel/i18n/en.js.rl" */
 
     this.docstring_content_type_end = p;
   		break;
 case 5:
-/* line 29 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 29 "ragel/i18n/en.js.rl" */
 
     var con = this.unindent(
       this.start_col, 
@@ -7882,111 +8594,111 @@ case 5:
     this.listener.doc_string(con_type, con, this.current_line); 
   		break;
 case 6:
-/* line 38 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 38 "ragel/i18n/en.js.rl" */
 
     p = this.store_keyword_content('feature', data, p, eof);
   		break;
 case 7:
-/* line 42 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 42 "ragel/i18n/en.js.rl" */
 
     p = this.store_keyword_content('background', data, p, eof);
   		break;
 case 8:
-/* line 46 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 46 "ragel/i18n/en.js.rl" */
 
     p = this.store_keyword_content('scenario', data, p, eof);
   		break;
 case 9:
-/* line 50 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 50 "ragel/i18n/en.js.rl" */
 
     p = this.store_keyword_content('scenario_outline', data, p, eof);
   		break;
 case 10:
-/* line 54 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 54 "ragel/i18n/en.js.rl" */
 
     p = this.store_keyword_content('examples', data, p, eof);
   		break;
 case 11:
-/* line 58 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 58 "ragel/i18n/en.js.rl" */
 
     var con = this.bytesToString(data.slice(this.content_start, p)).trim();
     this.listener.step(this.keyword, con, this.current_line);
   		break;
 case 12:
-/* line 63 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 63 "ragel/i18n/en.js.rl" */
 
     var con = this.bytesToString(data.slice(this.content_start, p)).trim();
     this.listener.comment(con, this.line_number);
     this.keyword_start = null;
   		break;
 case 13:
-/* line 69 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 69 "ragel/i18n/en.js.rl" */
 
     var con = this.bytesToString(data.slice(this.content_start, p)).trim();
     this.listener.tag(con, this.line_number);
     this.keyword_start = null;
   		break;
 case 14:
-/* line 75 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 75 "ragel/i18n/en.js.rl" */
 
     this.line_number++;
   		break;
 case 15:
-/* line 79 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 79 "ragel/i18n/en.js.rl" */
 
     this.last_newline = p + 1;
   		break;
 case 16:
-/* line 83 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 83 "ragel/i18n/en.js.rl" */
 
     this.keyword_start = this.keyword_start || p;
   		break;
 case 17:
-/* line 87 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 87 "ragel/i18n/en.js.rl" */
 
     this.keyword = this.bytesToString(data.slice(this.keyword_start, p)).replace(/:$/, '');
     this.keyword_start = null;
   		break;
 case 18:
-/* line 92 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 92 "ragel/i18n/en.js.rl" */
 
     this.next_keyword_start = p;
   		break;
 case 19:
-/* line 96 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 96 "ragel/i18n/en.js.rl" */
 
     p = p - 1;
     current_row = [];
     this.current_line = this.line_number;
   		break;
 case 20:
-/* line 102 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 102 "ragel/i18n/en.js.rl" */
 
     this.content_start = p;
   		break;
 case 21:
-/* line 106 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 106 "ragel/i18n/en.js.rl" */
 
     var con = this.bytesToString(data.slice(this.content_start, p)).trim();
     current_row.push(con.replace(/\\\|/, "|").replace(/\\n/, "\n").replace(/\\\\/, "\\"));
   		break;
 case 22:
-/* line 111 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 111 "ragel/i18n/en.js.rl" */
 
     this.listener.row(current_row, this.current_line);
   		break;
 case 23:
-/* line 115 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 115 "ragel/i18n/en.js.rl" */
 
     if(this.cs < lexer_first_final) {
       var content = this.current_line_content(data, p);
-      throw "Lexing error on line " + this.line_number + ": '" + content + "'. See http://wiki.github.com/cucumber/gherkin/lexingerror for more information.";
+      throw new Error("Lexing error on line " + this.line_number + ": '" + content + "'. See http://wiki.github.com/cucumber/gherkin/lexingerror for more information.");
     } else {
       this.listener.eof();
     }
     
   		break;
-/* line 1012 "js/lib/gherkin/lexer/en.js" */
+/* line 1015 "js/lib/gherkin/lexer/en.js" */
 			} /* action switch */
 		}
 	}
@@ -8015,17 +8727,17 @@ case 23:
 		__acts += 1;
 		switch (_lexer_actions[__acts - 1]) {
 case 23:
-/* line 115 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 115 "ragel/i18n/en.js.rl" */
 
     if(this.cs < lexer_first_final) {
       var content = this.current_line_content(data, p);
-      throw "Lexing error on line " + this.line_number + ": '" + content + "'. See http://wiki.github.com/cucumber/gherkin/lexingerror for more information.";
+      throw new Error("Lexing error on line " + this.line_number + ": '" + content + "'. See http://wiki.github.com/cucumber/gherkin/lexingerror for more information.");
     } else {
       this.listener.eof();
     }
     
   		break;
-/* line 1051 "js/lib/gherkin/lexer/en.js" */
+/* line 1054 "js/lib/gherkin/lexer/en.js" */
 		} /* eof action switch */
 	}
 	if (_trigger_goto) {
@@ -8039,28 +8751,121 @@ case 23:
 	}
 	}
 
-/* line 163 "/Users/ahellesoy/github/gherkin/tasks/../ragel/i18n/en.js.rl" */
+/* line 165 "ragel/i18n/en.js.rl" */
+};
+
+
+/*
+ * Decode utf-8 byte sequence to string.
+ */
+var decodeUtf8 = function(bytes) {
+  var result = "";
+  var i = 0;
+  var wc;
+  var c;
+
+  while (i < bytes.length) {
+    /* parse as UTF-8 lead byte */
+    wc = bytes[i++];
+    if (wc < 0x80) {
+      count = 0;
+    } else if (wc < 0xC2 || wc >= 0xF8) {
+      throw new Error("input is not a valid UTF-8 lead octet");
+    } else if (wc < 0xE0) {
+      count = 1;
+      wc = (wc & 0x1F) << 6;
+    } else if (wc < 0xF0) {
+      count = 2;
+      wc = (wc & 0x0F) << 12;
+    } else /* wc < 0xF8 */ {
+      count = 3;
+      wc = (wc & 0x07) << 18;
+    }
+
+    /* parse trail bytes, if any */
+    while (count) {
+      if (!(i < bytes.length)) {
+        throw new Error("short read");
+      }
+      if ((c = bytes[i++] ^ 0x80) > 0x3F) {
+        throw new Error("input is not a valid UTF-8 trail octet");
+      }
+      wc |= c << (6 * --count);
+      if (wc < (1 << (5 * count + 6))) {
+        throw new Error("invalid non-minimal encoded input");
+      }
+    }
+
+    /* handle conversion to UTF-16 if needed */
+    if (wc > 0xFFFF) {
+      wc -= 0x10000;
+      result += String.fromCharCode(0xD800 + (wc >> 10));
+      wc = 0xDC00 + (wc & 0x3FF);
+    }
+    result += String.fromCharCode(wc);
+  }
+
+  return result;
+};
+
+/*
+ * Encode string to an array of bytes using utf8 encoding.
+ *
+ * Javascript internally stores character data as utf16 (like java).
+ * String.charCodeAt() does *not* produce unicode points, but simply
+ * reflects this internal representation. Thus, it is necessary
+ * to first decode the utf-16 representation before encoding to
+ * utf-8.
+ */
+var encodeUtf8 = function(string) {
+  var bytes = [];
+  var i = 0;
+  var j = 0;
+  var wc;
+
+  while (i < string.length) {
+    wc = string.charCodeAt(i++);
+    if (wc >= 0xD800 && wc <= 0xDBFF && i < string.length && string.charCodeAt(i) >= 0xDC00 && string.charCodeAt(i) <= 0xDFFF) {
+      /* decode UTF-16 */
+      wc = 0x10000 + ((wc & 0x3FF) << 10) + (string.charCodeAt(i++) & 0x3FF);
+    }
+
+    /* emit lead byte */
+    if (wc < 0x80) {
+      bytes[j++] = wc;
+      count = 0;
+    } else if (wc < 0x800) {
+      bytes[j++] = 0xC0 | (wc >> 6);
+      count = 1;
+    } else if (wc < 0x10000) {
+      bytes[j++] = 0xE0 | (wc >> 12);
+      count = 2;
+    } else {
+      /* SMP: 21-bit Unicode */
+      bytes[j++] = 0xF0 | (wc >> 18);
+      count = 3;
+    }
+
+    /* emit trail bytes, if any */
+    while (count) {
+      bytes[j++] = 0x80 | ((wc >> (6 * --count)) & 0x3F);
+    }
+  }
+
+  return bytes;
+
 };
 
 Lexer.prototype.bytesToString = function(bytes) {
   if(typeof bytes.write == 'function') {
     // Node.js
     return bytes.toString('utf-8');
-  } else {
-    var result = "";
-    for(var b in bytes) {
-      result += String.fromCharCode(bytes[b]);
-    }
-    return result;
   }
+  return decodeUtf8(bytes);
 };
 
 Lexer.prototype.stringToBytes = function(string) {
-  var bytes = [];
-  for(var i = 0; i < string.length; i++) {
-    bytes[i] = string.charCodeAt(i);
-  }
-  return bytes;
+  return encodeUtf8(string);
 };
 
 Lexer.prototype.unindent = function(startcol, text) {
@@ -8082,7 +8887,7 @@ Lexer.prototype.store_keyword_content = function(event, data, p, eof) {
 };
 
 Lexer.prototype.current_line_content = function(data, p) {
-  var rest = data.slice(this.last_newline, -1);
+  var rest = Array.prototype.slice.call(data,this.last_newline, -1);
   var end = rest.indexOf(10) || -1;
   return this.bytesToString(rest.slice(0, end)).trim();
 };
