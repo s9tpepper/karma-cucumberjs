@@ -30,7 +30,7 @@ module.exports = function (grunt) {
       jasmine: {
         configFile: "karma.conf.js",
         singleRun: true,
-        browsers: ["Chrome", "Firefox"]
+        browsers: ["Chrome", "Firefox", "Safari"]
       },
 
       cuke_once: {
