@@ -9,6 +9,7 @@ define(['source/adapter/cucumber_runner', 'spec/support/helper'], function (Cucu
       karma.files = [];
 
       window = helper.createSpyWithStubs('window', {});
+      window.__coverage__ = "__coverage__";
 
       CucumberRunner.FileLoader = jasmine.createSpy('FileLoader');
       fileLoader = helper.createSpyWithStubs('file loader', {loadFile: null});
@@ -370,10 +371,10 @@ define(['source/adapter/cucumber_runner', 'spec/support/helper'], function (Cucu
     });
 
     describe('onCucumberFinished()', function () {
-      it('tells karma that the Cucumber run is over', function () {
+      it('tells karma that the Cucumber run is over passing on the coverage', function () {
         cucumberRunner.onCucumberFinished();
 
-        expect(karma.complete).toHaveBeenCalledWith({});
+        expect(karma.complete).toHaveBeenCalledWith({coverage: window.__coverage__});
       });
     });
   });
