@@ -35,8 +35,10 @@
         self.features.push([featureFilePath, fileContents]);
       },
 
-      startCucumberRun: function startCucumberRun() {
-        var cucumber = CucumberRunner.Cucumber(self.features, self.stepDefinitionsFunction);
+      startCucumberRun: function startCucumberRun(options) {
+        options = options || {tags: []};
+
+        var cucumber = CucumberRunner.Cucumber(self.features, self.stepDefinitionsFunction, options);
         cucumber.attachListener(CucumberRunner.HtmlListener());
         cucumber.attachListener(CucumberRunner.KarmaListener(karma));
         cucumber.attachListener(CucumberRunner.Cucumber.Listener.PrettyFormatter({
