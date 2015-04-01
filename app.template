@@ -7,5 +7,5 @@
     $('.box').css('background-color', 'red');
   });
 
-  startCucumberRun();
+  startCucumberRun({ tags: ["@test_tag"] });
 </script>
