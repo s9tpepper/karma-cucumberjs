@@ -71,7 +71,9 @@
       },
 
       onCucumberFinished: function onCucumberFinished() {
-        karma.complete({});
+        karma.complete({
+          coverage: window.__coverage__
+        });
       }
     };
 
